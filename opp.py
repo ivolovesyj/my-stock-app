@@ -281,8 +281,8 @@ else:
 
         # --- 차트 영역 ---
         st.subheader("📈 추세 비교 차트")
-        # [NEW] 차트 조작 팁 추가
-        st.caption("💡 **Tip:** 차트 하단의 **'기간 슬라이더'**를 양쪽으로 드래그하면, 원하는 구간만 **확대/축소(Zoom)**해서 자세히 볼 수 있습니다.")
+        # [수정] 볼드(**) 제거된 깔끔한 텍스트
+        st.caption("💡 Tip: 차트 하단의 '기간 슬라이더'를 양쪽으로 드래그하면, 원하는 구간만 확대/축소(Zoom)해서 자세히 볼 수 있습니다.")
         
         fig = go.Figure()
         fig.add_trace(go.Scatter(x=df_final.index, y=df_final['Stock_Norm'], name='주가 (정규화)', line=dict(color='#2962FF', width=2)))
@@ -294,7 +294,7 @@ else:
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
             height=400
         )
-        fig.update_xaxes(rangeslider_visible=True) # 슬라이더 활성화
+        fig.update_xaxes(rangeslider_visible=True)
         st.plotly_chart(fig, use_container_width=True)
 
         # 개별 지표 분석

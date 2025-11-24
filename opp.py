@@ -5,6 +5,7 @@ import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
+import time  # [NEW] 연출을 위해 time 모듈 추가
 
 # --- 1. 페이지 설정 & 디자인 커스텀 ---
 st.set_page_config(page_title="My Quant Model", layout="wide", page_icon="📈")
@@ -79,60 +80,67 @@ def get_exchange_rate():
     except:
         return 1400.0, datetime.now().strftime('%Y-%m-%d')
 
-# --- [핵심] 알고리즘 개선 (보완됨) ---
-@st.cache_data
-def find_optimal_mix(stock_code, start_date):
-    # 1. 주가 데이터 가져오기
+# --- [수정] 최적화 알고리즘 함수 (캐싱 제거 - UI 연출을 위해) ---
+# (st.cache_data를 쓰면 연출이 스킵되므로, 연출을 보고 싶다면 제거하거나 유지하고 연출을 분리해야 함.
+# 여기서는 '실시간 연출'을 위해 캐싱을 잠시 뺍니다. 속도 차이가 크지 않다면 이게 UX에 좋습니다.)
+def find_optimal_mix(stock_code, start_date, progress_bar=None, status_text=None):
+    
+    # 1. 주가 데이터 수집
+    if status_text: status_text.text("🔍 1/4단계: 주가 데이터 수집 중...")
+    if progress_bar: progress_bar.progress(10)
+    time.sleep(0.3) # 연출용 대기
+
     try:
         stock = fdr.DataReader(stock_code, start_date)['Close']
-        # 주가 데이터 전처리 (결측치 제거)
         stock = stock.dropna()
         if stock.empty: return None
     except:
         return None
 
-    # 주가 정규화 (0~1)
     stock_norm = (stock - stock.min()) / (stock.max() - stock.min())
 
-    results = []
+    # 2. 경제지표 스캔
+    if status_text: status_text.text("📊 2/4단계: 글로벌 경제지표 스캔 및 상관관계 분석...")
+    if progress_bar: progress_bar.progress(30)
     
+    results = []
+    total_indicators = len(INDICATORS_MAP)
+    current_count = 0
+
     for name, code in INDICATORS_MAP.items():
+        # 진행률 업데이트 (연출)
+        current_count += 1
+        if progress_bar: 
+            progress = 30 + int((current_count / total_indicators) * 40) # 30% ~ 70% 구간
+            progress_bar.progress(progress)
+        
         try:
             indi = fdr.DataReader(code, start_date)
             if indi.empty: continue
             
-            # [보완] 날짜 인덱스 맞추기 & 보간법(Interpolate) 적용
-            # 주식 거래일 기준으로 reindex하고, 빈 날짜(주말 등)는 채워줍니다.
             aligned_indi = indi.iloc[:, 0].reindex(stock.index).interpolate(method='linear').fillna(method='bfill').fillna(method='ffill')
-            
-            # 지표 정규화
             indi_norm = (aligned_indi - aligned_indi.min()) / (aligned_indi.max() - aligned_indi.min())
-            
-            # 상관계수 계산
             corr = stock_norm.corr(indi_norm)
             
-            # [보완] 상관계수가 NaN이면 건너뜀
             if pd.isna(corr): continue
-            
             results.append({'name': name, 'corr': corr, 'abs_corr': abs(corr)})
         except:
             continue
     
     if not results: return None
 
-    # 3. 상위 지표 선정
-    df_res = pd.DataFrame(results)
-    
-    # [보완] 최소 상관계수 필터링 (의미 없는 지표 제외)
-    # 상관계수 절대값이 0.3 이상인 것만 후보로 씁니다.
-    df_res = df_res[df_res['abs_corr'] >= 0.3]
-    
-    if df_res.empty: return "NO_CORRELATION" # 맞는 게 하나도 없을 경우
+    # 3. 최적화 로직
+    if status_text: status_text.text("🧠 3/4단계: AI 최적 비중 계산 중...")
+    if progress_bar: progress_bar.progress(80)
+    time.sleep(0.5) # 연출용 대기
 
-    # 상위 3개 선정
+    df_res = pd.DataFrame(results)
+    df_res = df_res[df_res['abs_corr'] >= 0.3] # 필터링
+    
+    if df_res.empty: return "NO_CORRELATION"
+
     df_res = df_res.sort_values('abs_corr', ascending=False).head(3)
 
-    # 4. 비중 계산 (총합 100% 되도록)
     total_corr = df_res['abs_corr'].sum()
     
     optimized_config = []
@@ -145,12 +153,17 @@ def find_optimal_mix(stock_code, start_date):
             "Inverse": is_inverse
         })
         
+    # 4. 완료
+    if status_text: status_text.text("✅ 4/4단계: 완료!")
+    if progress_bar: progress_bar.progress(100)
+    time.sleep(0.3)
+        
     return optimized_config
 
 # --- 3. 사이드바 UI ---
 st.sidebar.header("🎛️ 퀀트 모델 설정")
 
-# Step 1
+# Step 1. 종목 선택
 st.sidebar.subheader("Step 1. 종목 선택")
 with st.spinner('리스트 로딩 중...'):
     df_stocks = get_stock_list()
@@ -173,34 +186,43 @@ else:
     ticker = ticker_from_list
     display_name = selected_label.split('(')[0]
 
-# Step 2
+# Step 2. 지표 믹싱
 st.sidebar.markdown("---")
 st.sidebar.subheader("Step 2. 경제지표 믹싱")
 
-# 기간 설정 (최적화를 위해 미리 변수 필요)
+# 기간 설정
 period_options = {"6개월": 180, "1년": 365, "2년": 730, "3년": 1095, "5년": 1825}
 selected_period = st.sidebar.select_slider("분석 기간", options=list(period_options.keys()), value="2년")
 days = period_options[selected_period]
 start_date = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
 
-# [AI 최적화 버튼]
+# [NEW] AI 최적화 버튼 (연출 추가)
 if st.sidebar.button("⚡ AI 최적 조합 찾기 (Auto-Fit)", type="primary", use_container_width=True):
-    with st.spinner(f"🤖 {display_name}의 데이터를 분석하여 최적의 모델을 생성 중입니다..."):
-        opt_result = find_optimal_mix(ticker, start_date)
-        
-        if opt_result == "NO_CORRELATION":
-            st.sidebar.warning("⚠️ 유의미한 상관관계를 가진 지표를 찾지 못했습니다. (최근 주가 움직임이 독자적일 수 있습니다)")
-        elif opt_result:
-            st.session_state.optimized_data = opt_result
-            st.sidebar.success(f"✅ 최적 조합 발견! ({len(opt_result)}개 지표)")
-        else:
-            st.sidebar.error("데이터 분석 중 오류가 발생했습니다.")
+    # 사이드바에 빈 공간(placeholder)을 만들어서 진행상황 표시
+    status_text = st.sidebar.empty()
+    progress_bar = st.sidebar.progress(0)
+    
+    # 함수 실행 시 progress_bar와 status_text를 넘겨줌
+    opt_result = find_optimal_mix(ticker, start_date, progress_bar, status_text)
+    
+    # 완료 후 정리
+    time.sleep(0.5)
+    status_text.empty()
+    progress_bar.empty()
+    
+    if opt_result == "NO_CORRELATION":
+        st.sidebar.warning("⚠️ 유의미한 상관관계를 가진 지표를 찾지 못했습니다.")
+    elif opt_result:
+        st.session_state.optimized_data = opt_result
+        st.sidebar.success(f"✅ 최적 조합 발견! ({len(opt_result)}개 지표)")
+        st.rerun() # 화면 갱신
+    else:
+        st.sidebar.error("데이터 분석 중 오류가 발생했습니다.")
 
 # 데이터 에디터 초기값
 if 'optimized_data' in st.session_state:
     current_data = st.session_state.optimized_data
 else:
-    # 기본값
     current_data = [
         {"Name": "미국 10년물 금리", "Weight": 50.0, "Inverse": True},
         {"Name": "원/달러 환율", "Weight": 50.0, "Inverse": True}
@@ -247,7 +269,6 @@ for index, row in edited_df.iterrows():
 def load_data_mix(stock_code, configs, start):
     try:
         stock = fdr.DataReader(stock_code, start)['Close']
-        # 주가도 중간에 빈 날짜가 있을 수 있으므로 보간
         stock = stock.interpolate(method='linear')
     except: return None, None, None, None
 
@@ -260,8 +281,6 @@ def load_data_mix(stock_code, configs, start):
         try:
             data = fdr.DataReader(conf['code'], start)
             if data.empty: continue
-            
-            # [보완] 데이터 정렬 및 보간
             aligned = data.iloc[:, 0].reindex(stock.index).interpolate(method='linear').fillna(method='bfill').fillna(method='ffill')
             loaded_indicators[name] = aligned
             
@@ -305,7 +324,7 @@ else:
                 price_text = f"{df_final['Stock'].iloc[-1]:,.0f}원"
                 sub_text = "KRW"
             else:
-                ex_rate, _ = get_exchange_rate()
+                ex_rate = get_exchange_rate()
                 krw = df_final['Stock'].iloc[-1] * ex_rate
                 price_text = f"${df_final['Stock'].iloc[-1]:,.2f}"
                 sub_text = f"약 {krw:,.0f}원 (환율 {ex_rate:,.0f}원)"
@@ -351,13 +370,9 @@ else:
                     with cols[idx % 2]:
                         st.markdown(f"**📌 주가 vs {name}**")
                         sub_fig = make_subplots(specs=[[{"secondary_y": True}]])
-                        sub_fig.add_trace(
-                            go.Scatter(x=df_final.index, y=df_final['Stock_Norm'], name="주가", line=dict(color='#bdbdbd', width=1)), secondary_y=False
-                        )
+                        sub_fig.add_trace(go.Scatter(x=df_final.index, y=df_final['Stock_Norm'], name="주가", line=dict(color='#bdbdbd', width=1)), secondary_y=False)
                         score_name = "지표(역)" if configs[name]['inverse'] else "지표(정)"
-                        sub_fig.add_trace(
-                            go.Scatter(x=norm_indicators[name].index, y=norm_indicators[name], name=score_name, line=dict(color='#FF4081', width=2)), secondary_y=True
-                        )
+                        sub_fig.add_trace(go.Scatter(x=norm_indicators[name].index, y=norm_indicators[name], name=score_name, line=dict(color='#FF4081', width=2)), secondary_y=True)
                         sub_fig.update_layout(showlegend=False, height=250, margin=dict(l=0, r=0, t=10, b=0))
                         sub_fig.update_yaxes(showticklabels=False)
                         st.plotly_chart(sub_fig, use_container_width=True)

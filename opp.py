@@ -3,7 +3,8 @@ import FinanceDataReader as fdr
 import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
-import plotly.express as px  # 산포도 그리기에 최적
+import plotly.express as px
+from plotly.subplots import make_subplots  # [복구됨] 이 친구가 빠져서 에러가 났었습니다!
 from datetime import datetime, timedelta
 import time
 
@@ -244,6 +245,7 @@ else:
 
         # --- 차트 ---
         st.subheader("📈 추세 비교")
+        st.caption("💡 Tip: 차트 하단의 '기간 슬라이더'를 드래그하여 확대/축소할 수 있습니다.")
         fig = go.Figure()
         fig.add_trace(go.Scatter(x=df.index, y=df['Stock_N'], name='주가(정규화)', line=dict(color='blue')))
         fig.add_trace(go.Scatter(x=df.index, y=df['Macro_N'], name='매크로 모델', line=dict(color='red', dash='dot')))
@@ -251,58 +253,51 @@ else:
         fig.update_layout(hovermode="x unified", height=400, margin=dict(t=10, b=0))
         st.plotly_chart(fig, use_container_width=True)
 
-        # --- [NEW] 예측력 검증 (Backtest) ---
+        # --- 예측력 검증 (Backtest) ---
         st.markdown("---")
         st.subheader("🔮 이 모델의 예측력 검증 (Backtest)")
         
-        # 1. 데이터 준비 (괴리율 vs 미래 수익률)
-        # 괴리율(Gap) = 주가(정규화) - 매크로(정규화)
-        # 양수면 주가가 비싼 것 -> 미래에 주가가 떨어져야 예측력이 좋은 것 (음의 상관관계)
         analysis_df = pd.DataFrame({
             'Gap': df['Stock_N'] - df['Macro_N'],
-            'Next_Return': df['Stock'].pct_change(periods=20).shift(-20) * 100 # 20일(1달) 뒤 수익률
+            'Next_Return': df['Stock'].pct_change(periods=20).shift(-20) * 100 
         }).dropna()
 
-        # 2. 상관관계 계산
         if not analysis_df.empty:
             corr_predict = analysis_df['Gap'].corr(analysis_df['Next_Return'])
             
-            # 3. 결과 해석 및 출력
             c_res1, c_res2 = st.columns([1, 2])
             
             with c_res1:
                 st.markdown("#### 📊 분석 결과")
-                st.metric("예측 상관계수", f"{corr_predict:.2f}", help="-1에 가까울수록 '괴리율이 클 때 주가가 잘 떨어진다'는 뜻입니다.")
+                st.metric("예측 상관계수", f"{corr_predict:.2f}", help="-1에 가까울수록 좋습니다.")
                 
                 if corr_predict < -0.3:
-                    st.success("✅ **유효한 모델입니다!**\n\n과거 데이터를 볼 때, 괴리율이 클 때(고평가) 주가가 하락하는 경향이 뚜렷합니다.")
+                    st.success("✅ **유효한 모델입니다!**\n\n과거 데이터를 볼 때, 괴리율이 클 때 주가가 하락하는 경향이 있습니다.")
                 elif corr_predict > 0.3:
-                    st.error("❌ **위험한 모델입니다!**\n\n오히려 고평가일 때 주가가 더 오르는 '모멘텀' 성향이 강합니다. 역추세 매매에 주의하세요.")
+                    st.error("❌ **위험한 모델입니다!**\n\n오히려 고평가일 때 주가가 더 오르는 경향이 있습니다.")
                 else:
-                    st.warning("⚠️ **예측력이 약합니다.**\n\n괴리율과 미래 주가 사이에 뚜렷한 패턴이 없습니다. 지표 구성을 바꿔보세요.")
+                    st.warning("⚠️ **예측력이 약합니다.**\n\n뚜렷한 패턴이 없습니다.")
 
             with c_res2:
-                # 산포도 (Scatter Plot) 그리기
-                fig_scat = px.scatter(
-                    analysis_df, x='Gap', y='Next_Return', 
-                    trendline="ols", # 회귀선 추가
-                    trendline_color_override="red",
-                    title="괴리율(X)에 따른 1개월 뒤 수익률(Y)",
-                    labels={'Gap': '괴리율 (현재 고평가 정도)', 'Next_Return': '1개월 뒤 수익률 (%)'},
-                    opacity=0.3
-                )
+                # [수정] 여기서 에러 났던 부분! statsmodels가 없어도 점은 찍히게 처리
+                try:
+                    fig_scat = px.scatter(
+                        analysis_df, x='Gap', y='Next_Return', 
+                        trendline="ols", 
+                        trendline_color_override="red",
+                        title="괴리율(X) vs 1개월 뒤 수익률(Y)",
+                        opacity=0.3
+                    )
+                except:
+                    # statsmodels 없으면 추세선 없이 그림
+                    fig_scat = px.scatter(
+                        analysis_df, x='Gap', y='Next_Return', 
+                        title="괴리율(X) vs 1개월 뒤 수익률(Y) (추세선 없음)",
+                        opacity=0.3
+                    )
+                
                 fig_scat.update_layout(height=350)
                 st.plotly_chart(fig_scat, use_container_width=True)
-                
-            with st.expander("🔎 그래프 해석하는 법"):
-                st.markdown("""
-                * **X축 (괴리율):** 오른쪽으로 갈수록 현재 주가가 경제지표보다 비싸다는 뜻입니다.
-                * **Y축 (미래 수익률):** 위쪽은 수익(+), 아래쪽은 손실(-)입니다.
-                * **빨간 선 (추세선):** 이 선이 **'오른쪽 아래(↘)'**로 내려가야 좋은 모델입니다. (비쌀 때 사면 손해 본다는 뜻)
-                """)
-
-        else:
-            st.info("데이터가 부족하여 검증할 수 없습니다.")
 
         # 개별 지표 탭
         with st.expander("📊 개별 지표 상세 보기"):
@@ -310,6 +305,7 @@ else:
             for i, name in enumerate(configs.keys()):
                 if name in norms:
                     with cols[i%2]:
+                        # [수정] make_subplots 임포트했으니 이제 잘 됩니다!
                         fig_sub = make_subplots(specs=[[{"secondary_y": True}]])
                         fig_sub.add_trace(go.Scatter(x=df.index, y=df['Stock_N'], name="주가", line=dict(color='#ccc')), secondary_y=False)
                         fname = f"{name} (역)" if configs[name]['inverse'] else name

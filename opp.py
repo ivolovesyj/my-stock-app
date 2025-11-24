@@ -7,30 +7,69 @@ from datetime import datetime, timedelta
 # 페이지 설정
 st.set_page_config(page_title="내 손안의 퀀트", layout="wide")
 
-# --- 1. 데이터 캐싱 ---
+# --- 1. 데이터 캐싱 (여기가 핵심!) ---
 @st.cache_data
 def get_stock_list():
+    # A. 한국 주식 (KRX)
     try:
-        # 한국 주식 (KRX)
         df_krx = fdr.StockListing('KRX')
         df_krx = df_krx[['Code', 'Name']]
     except:
-        df_krx = pd.DataFrame({'Code': ['005930'], 'Name': ['삼성전자']})
+        df_krx = pd.DataFrame({'Code': ['005930'], 'Name': ['삼성전자(데이터 로딩 실패)']})
 
-    # 미국 주식 (S&P 500 + 주요 인기 ETF/종목)
-    us_stocks = {
-        'AAPL': '애플 (Apple)', 'NVDA': '엔비디아 (NVIDIA)', 'TSLA': '테슬라 (Tesla)',
-        'MSFT': '마이크로소프트 (Microsoft)', 'GOOGL': '구글 (Alphabet)',
-        'AMZN': '아마존 (Amazon)', 'META': '메타 (Meta)', 'NFLX': '넷플릭스 (Netflix)',
-        'AMD': 'AMD', 'INTC': '인텔 (Intel)', 'QQQ': '나스닥 ETF (QQQ)',
-        'SPY': 'S&P500 ETF (SPY)', 'SOXL': '반도체 3배 (SOXL)', 'TQQQ': '나스닥 3배 (TQQQ)',
-        'O': '리얼티인컴 (Realty Income)', 'PLTR': '팔란티어 (Palantir)', 'IONQ': '아이온큐 (IonQ)',
-        'JEPI': 'JP모건 커버드콜 (JEPI)', 'SCHD': '슈왑 배당 성장 (SCHD)'
-    }
-    df_us = pd.DataFrame(list(us_stocks.items()), columns=['Code', 'Name'])
+    # B. 미국 S&P 500 (3중 안전장치)
+    df_sp500 = pd.DataFrame()
     
-    df_total = pd.concat([df_krx, df_us])
+    # 시도 1: FinanceDataReader로 긁어오기
+    try:
+        df_sp500 = fdr.StockListing('S&P500')
+        df_sp500 = df_sp500[['Symbol', 'Name']]
+        df_sp500.columns = ['Code', 'Name']
+    except:
+        pass
+
+    # 시도 2: (1번 실패시) GitHub에 있는 S&P500 전체 CSV 파일 읽어오기 (무조건 성공함)
+    if df_sp500.empty:
+        try:
+            url = "https://raw.githubusercontent.com/datasets/s-and-p-500-companies/master/data/constituents.csv"
+            df_sp500 = pd.read_csv(url)
+            df_sp500 = df_sp500[['Symbol', 'Name']]
+            df_sp500.columns = ['Code', 'Name']
+        except:
+            pass
+            
+    # 시도 3: (정말 만약에 다 실패하면) 주요 종목 비상용 리스트
+    if df_sp500.empty:
+         df_sp500 = pd.DataFrame([
+             {'Code': 'AAPL', 'Name': 'Apple Inc.'},
+             {'Code': 'NVDA', 'Name': 'NVIDIA Corp.'},
+             {'Code': 'DIS', 'Name': 'Walt Disney'},
+             {'Code': 'O', 'Name': 'Realty Income'}
+         ])
+
+    # 한글 별명 붙여주기 (검색 편의용)
+    # 500개 다 영어로만 뜨면 불편하니까 주요 종목은 한글도 같이 뜨게 매핑
+    korean_map = {
+        'AAPL': '애플', 'NVDA': '엔비디아', 'TSLA': '테슬라', 'MSFT': '마이크로소프트',
+        'GOOGL': '구글', 'AMZN': '아마존', 'META': '메타', 'NFLX': '넷플릭스',
+        'DIS': '월트 디즈니', 'KO': '코카콜라', 'PEP': '펩시', 'SBUX': '스타벅스',
+        'MCD': '맥도날드', 'NKE': '나이키', 'COST': '코스트코', 'WMT': '월마트',
+        'O': '리얼티인컴', 'JPM': 'JP모건', 'MMM': '3M', 'BA': '보잉'
+    }
+    
+    # 맵핑 적용: "Name" 컬럼에 한글 추가
+    for code, kor in korean_map.items():
+        # 해당 코드가 있는 행을 찾아서
+        mask = df_sp500['Code'] == code
+        if mask.any():
+            # 기존 영어 이름 뒤에 (한글) 추가
+            eng_name = df_sp500.loc[mask, 'Name'].values[0]
+            df_sp500.loc[mask, 'Name'] = f"{kor} ({eng_name})"
+
+    # C. 합치기
+    df_total = pd.concat([df_krx, df_sp500])
     df_total['Label'] = df_total['Name'] + " (" + df_total['Code'] + ")"
+    
     return df_total
 
 # --- 2. 지표별 가이드 ---
@@ -46,35 +85,32 @@ indicator_guide = {
 # --- 3. 사이드바 ---
 st.sidebar.title("🔍 분석 옵션")
 
-# A. 리스트에서 찾기
+# A. 리스트 검색
 try:
-    with st.spinner('종목 리스트 로딩 중...'):
+    with st.spinner('전 세계 종목 리스트 로딩 중... (최대 10초)'):
         df_stocks = get_stock_list()
     
     default_idx = 0
     if '005930' in df_stocks['Code'].values:
          default_idx = df_stocks.index[df_stocks['Code'] == '005930'].tolist()[0]
 
-    # [수정] help 파라미터 추가 (물음표 설명)
     selected_label = st.sidebar.selectbox(
         "1. 리스트에서 검색", 
         df_stocks['Label'].values,
         index=default_idx if default_idx < len(df_stocks) else 0,
-        help="🚀 웹사이트 속도를 위해 '한국 전 종목'과 '미국 S&P500/인기주'만 리스트에 담았습니다. 여기에 없는 종목은 아래 '직접 입력' 칸을 이용해주세요!"
+        help="🚀 이제 S&P 500 전 종목이 다 나옵니다. (디즈니, 보잉, 3M 등 포함)"
     )
     ticker_from_list = selected_label.split('(')[-1].replace(')', '')
-
 except:
     ticker_from_list = "005930"
 
-# B. 직접 입력하기
+# B. 직접 입력
 st.sidebar.markdown("---") 
-# [수정] help 파라미터 추가
 custom_ticker = st.sidebar.text_input(
     "2. 직접 입력 (티커)", 
     "",
-    placeholder="예: PLTR, JEPI, XOM",
-    help="💡 리스트에 없는 미국 주식이나 ETF는 여기에 티커(Symbol)만 적으시면 됩니다. (예: 팔란티어 -> PLTR)"
+    placeholder="예: JEPI, SCHD (ETF는 여기 입력)",
+    help="💡 S&P 500에 포함되지 않은 ETF나 중소형주는 여기에 티커를 적으세요."
 )
 
 if custom_ticker:
@@ -147,5 +183,6 @@ if df is not None and not df.empty:
     st.plotly_chart(fig, use_container_width=True)
 
 else:
-    st.error(f"'{ticker}' 데이터를 찾을 수 없습니다. 티커를 확인해주세요.")
-    st.caption("예: 애플(AAPL), 팔란티어(PLTR) / 삼성전자(005930)")
+    st.error(f"'{ticker}' 데이터를 찾을 수 없습니다.")
+    st.write("1. 티커(코드)가 정확한지 확인해주세요.")
+    st.write("2. 미국 주식이라면 직접 입력 창을 이용해보세요.")

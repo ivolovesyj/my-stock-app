@@ -1,6 +1,3 @@
 streamlit
 finance-datareader
-pandas-datareader
 plotly
-pandas
-lxml

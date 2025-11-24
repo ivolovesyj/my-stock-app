@@ -119,7 +119,6 @@ indicators = {
 selected_name = st.sidebar.selectbox("비교할 경제지표", list(indicators.keys()))
 selected_code = indicators[selected_name]
 
-# 분석 기간 설정
 st.sidebar.markdown("---") 
 st.sidebar.subheader("📅 분석 기간 설정")
 period_options = {
@@ -139,60 +138,78 @@ selected_period = st.sidebar.radio(
 days = period_options[selected_period]
 start_date = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
 
-# --- 4. 데이터 로딩 ---
+# --- 4. 데이터 로딩 (수정됨: 각각 따로 가져옴) ---
 @st.cache_data
-def load_data(stock_code, fred_code, start):
+def load_data_separate(stock_code, fred_code, start):
+    # 1. 주식 데이터 따로
     try:
         stock = fdr.DataReader(stock_code, start)
-        fred = fdr.DataReader(fred_code, start)
-        if stock.empty or fred.empty: return None
-        df = pd.concat([stock['Close'], fred], axis=1).dropna()
-        df.columns = ['Stock', 'Macro']
-        return df
     except:
-        return None
+        stock = pd.DataFrame()
+        
+    # 2. 경제지표 데이터 따로
+    try:
+        fred = fdr.DataReader(fred_code, start)
+    except:
+        fred = pd.DataFrame()
+        
+    return stock, fred
 
 # --- 5. 메인 화면 ---
 st.title(f"📈 {display_name} vs {selected_name}")
 
-df = load_data(ticker, selected_code, start_date)
+# 데이터를 각각 받아옵니다 (Merge 안 하고)
+stock_df, macro_df = load_data_separate(ticker, selected_code, start_date)
 
-if df is not None and not df.empty:
-    df['Stock_Norm'] = (df['Stock'] - df['Stock'].min()) / (df['Stock'].max() - df['Stock'].min())
-    df['Macro_Norm'] = (df['Macro'] - df['Macro'].min()) / (df['Macro'].max() - df['Macro'].min())
-    gap = df['Stock_Norm'].iloc[-1] - df['Macro_Norm'].iloc[-1]
+if not stock_df.empty and not macro_df.empty:
     
-    last_date = df.index[-1].strftime('%Y-%m-%d')
-    current_price = df['Stock'].iloc[-1]
+    # --- [핵심] 상단 숫자용 데이터 (무조건 최신값 사용) ---
+    latest_stock_price = stock_df['Close'].iloc[-1]
+    latest_stock_date = stock_df.index[-1].strftime('%Y-%m-%d')
+    
+    latest_macro_val = macro_df.iloc[-1].values[0] # FRED 데이터는 컬럼이 하나라 values[0]
+    latest_macro_date = macro_df.index[-1].strftime('%Y-%m-%d')
+
+    # --- 차트 & 괴리율용 데이터 (날짜 교집합 Merge) ---
+    # 분석을 위해서는 날짜를 맞춰야 하므로 여기서 합칩니다.
+    df_merged = pd.concat([stock_df['Close'], macro_df], axis=1).dropna()
+    df_merged.columns = ['Stock', 'Macro']
+    
+    # 정규화 및 괴리율 계산 (Merge된 데이터 기준)
+    df_merged['Stock_Norm'] = (df_merged['Stock'] - df_merged['Stock'].min()) / (df_merged['Stock'].max() - df_merged['Stock'].min())
+    df_merged['Macro_Norm'] = (df_merged['Macro'] - df_merged['Macro'].min()) / (df_merged['Macro'].max() - df_merged['Macro'].min())
+    gap = df_merged['Stock_Norm'].iloc[-1] - df_merged['Macro_Norm'].iloc[-1]
+    
+    # --- 화면 표시 ---
     is_krx = ticker.isdigit()
     exchange_rate_info = ""
 
     if is_krx:
         price_html = f"""
-        <div style="font-size: 14px; color: gray; margin-bottom: -5px;">주가 (종가 기준, {last_date})</div>
-        <div style="font-size: 32px; font-weight: bold;">{current_price:,.0f}원</div>
+        <div style="font-size: 14px; color: gray; margin-bottom: -5px;">주가 ({latest_stock_date})</div>
+        <div style="font-size: 32px; font-weight: bold;">{latest_stock_price:,.0f}원</div>
         """
     else:
         ex_rate, ex_date = get_exchange_rate()
-        krw_price = current_price * ex_rate
+        krw_price = latest_stock_price * ex_rate
         exchange_rate_info = f"💱 환율: {ex_rate:,.2f}원 ({ex_date})"
         price_html = f"""
-        <div style="font-size: 14px; color: gray; margin-bottom: -5px;">주가 (종가 기준, {last_date})</div>
-        <div style="font-size: 32px; font-weight: bold;">${current_price:,.2f}</div>
+        <div style="font-size: 14px; color: gray; margin-bottom: -5px;">주가 ({latest_stock_date})</div>
+        <div style="font-size: 32px; font-weight: bold;">${latest_stock_price:,.2f}</div>
         <div style="font-size: 16px; color: #555; margin-top: -5px;">(약 {krw_price:,.0f}원)</div>
         """
 
     guide = indicator_guide.get(selected_name)
     unit = guide['unit'] if guide else ""
-    macro_value_display = f"{df['Macro'].iloc[-1]:,.2f} {unit}"
+    macro_value_display = f"{latest_macro_val:,.2f} {unit}"
 
     col1, col2, col3 = st.columns(3)
     col1.markdown(price_html, unsafe_allow_html=True)
-    col2.metric(f"지표 (종가 기준, {last_date})", macro_value_display)
     
-    # 툴팁에는 간단한 요약만 넣고
-    short_tooltip = "정규화: 단위를 0~1로 통일 / 괴리율: 경제와 주가의 거리"
-
+    # 지표 날짜도 따로 표시해줍니다. (주가 날짜와 다를 수 있음을 명시)
+    col2.metric(f"지표 ({latest_macro_date})", macro_value_display)
+    
+    # 상태 결정
     if gap > 0.5:
         state = "🔴 과열 (조심!)"
     elif gap < -0.5:
@@ -200,12 +217,20 @@ if df is not None and not df.empty:
     else:
         state = "🟢 적정 (동행)"
 
-    col3.metric("괴리율 상태", state, f"{gap:.2f}", help=short_tooltip)
+    tooltip_text = """
+    🤔 정규화 (Normalization)란?
+    단위가 다른 주가와 지표를 0~1 점수로 변환해 '추세'만 비교하는 것입니다.
+
+    🐕 괴리율 (Gap)이란?
+    경제(주인)와 주가(강아지)의 거리입니다.
+    (+): 주가가 너무 앞서감 (과열)
+    (-): 주가가 너무 뒤처짐 (저평가)
+    """
+    col3.metric("괴리율 상태", state, f"{gap:.2f}", help=tooltip_text)
 
     if exchange_rate_info:
         st.caption(exchange_rate_info)
 
-    # --- [복구됨] AI 상세 리포트 ---
     st.markdown("### 🤖 AI 분석 리포트")
     if gap > 0.5:
         st.error(f"**🚨 [경고] 과열 구간 (Gap: {gap:.2f})**\n\n주가가 경제 지표보다 너무 빠르게 올랐습니다. 단기 급등일 수 있으니 주의하세요.")
@@ -214,39 +239,28 @@ if df is not None and not df.empty:
     else:
         st.success(f"**✅ [안정] 적정/동행 구간 (Gap: {gap:.2f})**\n\n주가가 경제 지표의 흐름을 잘 따라가고 있습니다.")
 
-    # --- [추가됨] 용어 설명 Expander (풀 버전) ---
-    # 선생님이 좋아하셨던 그 설명을 여기에 넣었습니다!
     with st.expander("❓ 정규화와 괴리율이 무엇인가요? (용어 설명 보기)"):
         st.markdown("""
         ### 1. 정규화 (Normalization)란? 🤔
         주가(예: 100,000원)와 경제지표(예: 4.5%)는 단위가 달라서 직접 비교할 수가 없습니다.
-        마치 **'키 180cm인 사람'과 '몸무게 80kg인 사람' 중 누가 더 큰가요?** 라고 묻는 것과 같죠.
-        
         그래서 두 데이터를 똑같이 **0점(최저) ~ 1점(최고)** 사이의 점수로 변환해서, **'추세(Trend)'만 비교하는 기술**입니다.
-        * **1.0에 가깝다면?** : 최근 기간 중 가장 높은 수준입니다.
-        * **0.0에 가깝다면?** : 최근 기간 중 가장 낮은 수준입니다.
         
         ---
         
         ### 2. 괴리율 (Gap)이란? 🐕
         유명한 투자자 앙드레 코스톨라니는 **'경제는 주인이고, 주가는 강아지다'**라고 했습니다.
-        강아지(주가)는 주인(경제)을 앞서거니 뒤서거니 하지만, 결국 산책 줄에 묶여 있어 주인 곁으로 돌아옵니다.
-        
         * **괴리율이 크다 (+):** 강아지가 주인보다 너무 멀리 앞서갔습니다. (주가 과열)
         * **괴리율이 작다 (-):** 강아지가 주인보다 너무 뒤쳐졌습니다. (주가 저평가)
-        * **0에 가깝다:** 강아지가 주인 옆에 잘 붙어서 가고 있습니다. (적정 주가)
         """)
 
-    # 투자 포인트
     if guide:
         with st.expander(f"💡 '{selected_name}' 투자 포인트 읽어보기", expanded=False):
             st.markdown(f"**[{guide['desc']}]**\n\n{guide['relation']} \n\n 👉 **Tip:** {guide['tip']}")
 
-    # 차트
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=df.index, y=df['Stock_Norm'], name='주가 (정규화)', line=dict(color='blue')))
-    fig.add_trace(go.Scatter(x=df.index, y=df['Macro_Norm'], name=selected_name, line=dict(color='red', dash='dot')))
+    fig.add_trace(go.Scatter(x=df_merged.index, y=df_merged['Stock_Norm'], name='주가 (정규화)', line=dict(color='blue')))
+    fig.add_trace(go.Scatter(x=df_merged.index, y=df_merged['Macro_Norm'], name=selected_name, line=dict(color='red', dash='dot')))
     st.plotly_chart(fig, use_container_width=True)
 
 else:
-    st.error(f"'{ticker}' 데이터를 찾을 수 없습니다.")
+    st.error(f"'{ticker}' 데이터를 찾을 수 없습니다. (혹은 경제 지표 데이터 로딩 실패)")

@@ -68,45 +68,14 @@ def get_exchange_rate():
     except:
         return 1400.0, datetime.now().strftime('%Y-%m-%d')
 
-# --- 2. 지표 가이드 & 단위(Unit) 추가 ---
-# [수정] 각 지표별로 'unit' 정보를 추가했습니다.
+# --- 2. 지표 가이드 ---
 indicator_guide = {
-    "미국 10년물 국채금리": {
-        "desc": "전 세계 자산의 기준이 되는 '돈의 몸값'", 
-        "relation": "📉 역의 관계 (금리↑ 주가↓)", 
-        "tip": "금리가 오르면 안전한 채권으로 돈이 쏠려 주식(특히 기술주)엔 악재입니다.",
-        "unit": "%" 
-    },
-    "원/달러 환율": {
-        "desc": "달러 1개를 사기 위한 한국 돈의 액수", 
-        "relation": "📉 역의 관계 (환율↑ 코스피↓)", 
-        "tip": "환율 급등은 외국인 자금 이탈을 부릅니다. 단, 수출 기업에겐 호재일 수 있습니다.",
-        "unit": "원"
-    },
-    "국제유가(WTI)": {
-        "desc": "에너지 비용을 대표하는 원유 가격", 
-        "relation": "⚠️ 케이스 바이 케이스", 
-        "tip": "수요 증가로 오르면 호재, 공급 부족(전쟁)으로 급등하면 비용 증가 악재입니다.",
-        "unit": "달러($)"
-    },
-    "나스닥 지수": {
-        "desc": "미국 기술주 중심의 시장 지수", 
-        "relation": "🤝 양의 관계 (동행)", 
-        "tip": "한국 주식 시장은 미국 나스닥의 흐름을 강하게 추종합니다.",
-        "unit": "pt"
-    },
-    "S&P 500 지수": {
-        "desc": "미국 우량주 500개 지수", 
-        "relation": "🤝 양의 관계 (동행)", 
-        "tip": "글로벌 증시의 표준입니다. 이 지수가 꺾이면 전 세계가 위험합니다.",
-        "unit": "pt"
-    },
-    "미국 기준금리": {
-        "desc": "미국 연준(Fed)의 정책 금리", 
-        "relation": "📉 역의 관계", 
-        "tip": "돈줄을 죄는 신호입니다. 금리 인상은 주식 시장에 하락 압력을 줍니다.",
-        "unit": "%"
-    }
+    "미국 10년물 국채금리": {"desc": "전 세계 자산의 기준이 되는 '돈의 몸값'", "relation": "📉 역의 관계 (금리↑ 주가↓)", "tip": "금리가 오르면 안전한 채권으로 돈이 쏠려 주식(특히 기술주)엔 악재입니다.", "unit": "%"},
+    "원/달러 환율": {"desc": "달러 1개를 사기 위한 한국 돈의 액수", "relation": "📉 역의 관계 (환율↑ 코스피↓)", "tip": "환율 급등은 외국인 자금 이탈을 부릅니다. 단, 수출 기업에겐 호재일 수 있습니다.", "unit": "원"},
+    "국제유가(WTI)": {"desc": "에너지 비용을 대표하는 원유 가격", "relation": "⚠️ 케이스 바이 케이스", "tip": "수요 증가로 오르면 호재, 공급 부족(전쟁)으로 급등하면 비용 증가 악재입니다.", "unit": "달러($)"},
+    "나스닥 지수": {"desc": "미국 기술주 중심의 시장 지수", "relation": "🤝 양의 관계 (동행)", "tip": "한국 주식 시장은 미국 나스닥의 흐름을 강하게 추종합니다.", "unit": "pt"},
+    "S&P 500 지수": {"desc": "미국 우량주 500개 지수", "relation": "🤝 양의 관계 (동행)", "tip": "글로벌 증시의 표준입니다. 이 지수가 꺾이면 전 세계가 위험합니다.", "unit": "pt"},
+    "미국 기준금리": {"desc": "미국 연준(Fed)의 정책 금리", "relation": "📉 역의 관계", "tip": "돈줄을 죄는 신호입니다. 금리 인상은 주식 시장에 하락 압력을 줍니다.", "unit": "%"}
 }
 
 # --- 3. 사이드바 ---
@@ -190,11 +159,8 @@ if df is not None and not df.empty:
         price_display = f"${current_price:,.2f} (약 {krw_price:,.0f}원)"
         exchange_rate_info = f"💱 적용 환율: {ex_rate:,.2f}원/달러 ({ex_date} 기준)"
 
-    # --- [수정] 지표 값에 단위 붙이기 ---
     guide = indicator_guide.get(selected_name)
-    unit = guide['unit'] if guide else "" # 단위 가져오기
-    
-    # 지표 값 포맷팅 (소수점 2자리 + 단위)
+    unit = guide['unit'] if guide else ""
     macro_value_display = f"{df['Macro'].iloc[-1]:,.2f} {unit}"
 
     col1, col2, col3 = st.columns(3)
@@ -222,9 +188,31 @@ if df is not None and not df.empty:
         st.info(f"📢 AI 코멘트: {msg}")
 
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=df.index, y=df['Stock_Norm'], name='주가 (종가)', line=dict(color='blue')))
+    fig.add_trace(go.Scatter(x=df.index, y=df['Stock_Norm'], name='주가 (정규화)', line=dict(color='blue')))
     fig.add_trace(go.Scatter(x=df.index, y=df['Macro_Norm'], name=selected_name, line=dict(color='red', dash='dot')))
     st.plotly_chart(fig, use_container_width=True)
+
+    # --- [NEW] 용어 설명 섹션 (Expander) ---
+    with st.expander("❓ '정규화'와 '괴리율'이 무엇인가요? (용어 설명 보기)"):
+        st.markdown("""
+        ### 1. 정규화 (Normalization)란? 🤔
+        주가(예: 100,000원)와 경제지표(예: 4.5%)는 단위가 달라서 직접 비교할 수가 없습니다.
+        마치 **'키 180cm인 사람'과 '몸무게 80kg인 사람' 중 누가 더 큰가요?** 라고 묻는 것과 같죠.
+        
+        그래서 두 데이터를 똑같이 **0점(최저) ~ 1점(최고)** 사이의 점수로 변환해서, **'추세(Trend)'만 비교하는 기술**입니다.
+        * **1.0에 가깝다면?** : 최근 기간 중 가장 높은 수준입니다.
+        * **0.0에 가깝다면?** : 최근 기간 중 가장 낮은 수준입니다.
+        
+        ---
+        
+        ### 2. 괴리율 (Gap)이란? 🐕
+        유명한 투자자 앙드레 코스톨라니는 **'경제는 주인이고, 주가는 강아지다'**라고 했습니다.
+        강아지(주가)는 주인(경제)을 앞서거니 뒤서거니 하지만, 결국 산책 줄에 묶여 있어 주인 곁으로 돌아옵니다.
+        
+        * **괴리율이 크다 (+):** 강아지가 주인보다 너무 멀리 앞서갔습니다. (주가 과열)
+        * **괴리율이 작다 (-):** 강아지가 주인보다 너무 뒤쳐졌습니다. (주가 저평가)
+        * **0에 가깝다:** 강아지가 주인 옆에 잘 붙어서 가고 있습니다. (적정 주가)
+        """)
 
 else:
     st.error(f"'{ticker}' 데이터를 찾을 수 없습니다.")

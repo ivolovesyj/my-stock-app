@@ -1,6 +1,7 @@
 import streamlit as st
 import FinanceDataReader as fdr
 import pandas as pd
+import numpy as np
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
@@ -33,51 +34,40 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # --- 2. 데이터 캐싱 ---
+INDICATORS_MAP = {
+    "미국 10년물 금리": "FRED:DGS10", 
+    "원/달러 환율": "FRED:DEXKOUS",
+    "국제유가(WTI)": "FRED:DCOILWTICO", 
+    "나스닥 지수": "FRED:NASDAQCOM",
+    "S&P 500 지수": "FRED:SP500", 
+    "미국 기준금리": "FRED:FEDFUNDS",
+    "달러 인덱스": "FRED:DTWEXBGS",
+    "VIX (공포지수)": "FRED:VIXCLS"
+}
+
 @st.cache_data
 def get_stock_list():
     base_data = [
-        {'Code': '005930', 'Name': '삼성전자'},
-        {'Code': '000660', 'Name': 'SK하이닉스'},
-        {'Code': '005380', 'Name': '현대차'},
-        {'Code': '035420', 'Name': 'NAVER'},
-        {'Code': '035720', 'Name': '카카오'},
-        {'Code': 'AAPL', 'Name': '애플 (Apple)'},
-        {'Code': 'NVDA', 'Name': '엔비디아 (NVIDIA)'},
-        {'Code': 'TSLA', 'Name': '테슬라 (Tesla)'},
-        {'Code': 'MSFT', 'Name': '마이크로소프트 (Microsoft)'},
-        {'Code': 'GOOGL', 'Name': '구글 (Alphabet)'},
-        {'Code': 'AMZN', 'Name': '아마존 (Amazon)'},
-        {'Code': 'DIS', 'Name': '월트 디즈니 (Disney)'},
-        {'Code': 'KO', 'Name': '코카콜라 (Coca-Cola)'},
-        {'Code': 'SBUX', 'Name': '스타벅스 (Starbucks)'},
-        {'Code': 'O', 'Name': '리얼티인컴 (Realty Income)'},
-        {'Code': 'QQQ', 'Name': '나스닥 100 (QQQ)'},
-        {'Code': 'SPY', 'Name': 'S&P 500 (SPY)'},
-        {'Code': 'SCHD', 'Name': '슈왑 배당 (SCHD)'},
-        {'Code': 'JEPI', 'Name': 'JP모건 커버드콜 (JEPI)'},
-        {'Code': 'PLTR', 'Name': '팔란티어 (Palantir)'},
-        {'Code': 'IONQ', 'Name': '아이온큐 (IonQ)'}
+        {'Code': '005930', 'Name': '삼성전자'}, {'Code': '000660', 'Name': 'SK하이닉스'},
+        {'Code': '005380', 'Name': '현대차'}, {'Code': '035420', 'Name': 'NAVER'},
+        {'Code': '035720', 'Name': '카카오'}, {'Code': 'AAPL', 'Name': '애플 (Apple)'},
+        {'Code': 'NVDA', 'Name': '엔비디아 (NVIDIA)'}, {'Code': 'TSLA', 'Name': '테슬라 (Tesla)'},
+        {'Code': 'MSFT', 'Name': '마이크로소프트'}, {'Code': 'GOOGL', 'Name': '구글'},
+        {'Code': 'AMZN', 'Name': '아마존'}, {'Code': 'DIS', 'Name': '월트 디즈니'},
+        {'Code': 'KO', 'Name': '코카콜라'}, {'Code': 'SBUX', 'Name': '스타벅스'},
+        {'Code': 'O', 'Name': '리얼티인컴'}, {'Code': 'QQQ', 'Name': '나스닥 100 (QQQ)'},
+        {'Code': 'SPY', 'Name': 'S&P 500 (SPY)'}, {'Code': 'SCHD', 'Name': '슈왑 배당 (SCHD)'},
+        {'Code': 'JEPI', 'Name': 'JP모건 커버드콜'}, {'Code': 'PLTR', 'Name': '팔란티어'},
+        {'Code': 'IONQ', 'Name': '아이온큐'}
     ]
     df_base = pd.DataFrame(base_data)
     
-    df_krx = pd.DataFrame()
-    df_sp500 = pd.DataFrame()
     try:
         df_krx = fdr.StockListing('KRX')[['Code', 'Name']]
-    except: pass
-    try:
-        url = "https://raw.githubusercontent.com/datasets/s-and-p-500-companies/master/data/constituents.csv"
-        df_sp500 = pd.read_csv(url)[['Symbol', 'Name']]
-        df_sp500.columns = ['Code', 'Name']
-        korean_map = {'AAPL':'애플', 'NVDA':'엔비디아', 'TSLA':'테슬라', 'MSFT':'마이크로소프트', 'GOOGL':'구글', 'AMZN':'아마존', 'META':'메타', 'NFLX':'넷플릭스'}
-        for code, kor in korean_map.items():
-             mask = df_sp500['Code'] == code
-             if mask.any():
-                 eng = df_sp500.loc[mask, 'Name'].values[0]
-                 df_sp500.loc[mask, 'Name'] = f"{kor} ({eng})"
-    except: pass
+        df_total = pd.concat([df_base, df_krx]).drop_duplicates(subset=['Code'])
+    except:
+        df_total = df_base
 
-    df_total = pd.concat([df_base, df_krx, df_sp500]).drop_duplicates(subset=['Code'])
     df_total['Label'] = df_total['Name'] + " (" + df_total['Code'] + ")"
     return df_total
 
@@ -88,6 +78,74 @@ def get_exchange_rate():
         return df['Close'].iloc[-1], df.index[-1].strftime('%Y-%m-%d')
     except:
         return 1400.0, datetime.now().strftime('%Y-%m-%d')
+
+# --- [핵심] 알고리즘 개선 (보완됨) ---
+@st.cache_data
+def find_optimal_mix(stock_code, start_date):
+    # 1. 주가 데이터 가져오기
+    try:
+        stock = fdr.DataReader(stock_code, start_date)['Close']
+        # 주가 데이터 전처리 (결측치 제거)
+        stock = stock.dropna()
+        if stock.empty: return None
+    except:
+        return None
+
+    # 주가 정규화 (0~1)
+    stock_norm = (stock - stock.min()) / (stock.max() - stock.min())
+
+    results = []
+    
+    for name, code in INDICATORS_MAP.items():
+        try:
+            indi = fdr.DataReader(code, start_date)
+            if indi.empty: continue
+            
+            # [보완] 날짜 인덱스 맞추기 & 보간법(Interpolate) 적용
+            # 주식 거래일 기준으로 reindex하고, 빈 날짜(주말 등)는 채워줍니다.
+            aligned_indi = indi.iloc[:, 0].reindex(stock.index).interpolate(method='linear').fillna(method='bfill').fillna(method='ffill')
+            
+            # 지표 정규화
+            indi_norm = (aligned_indi - aligned_indi.min()) / (aligned_indi.max() - aligned_indi.min())
+            
+            # 상관계수 계산
+            corr = stock_norm.corr(indi_norm)
+            
+            # [보완] 상관계수가 NaN이면 건너뜀
+            if pd.isna(corr): continue
+            
+            results.append({'name': name, 'corr': corr, 'abs_corr': abs(corr)})
+        except:
+            continue
+    
+    if not results: return None
+
+    # 3. 상위 지표 선정
+    df_res = pd.DataFrame(results)
+    
+    # [보완] 최소 상관계수 필터링 (의미 없는 지표 제외)
+    # 상관계수 절대값이 0.3 이상인 것만 후보로 씁니다.
+    df_res = df_res[df_res['abs_corr'] >= 0.3]
+    
+    if df_res.empty: return "NO_CORRELATION" # 맞는 게 하나도 없을 경우
+
+    # 상위 3개 선정
+    df_res = df_res.sort_values('abs_corr', ascending=False).head(3)
+
+    # 4. 비중 계산 (총합 100% 되도록)
+    total_corr = df_res['abs_corr'].sum()
+    
+    optimized_config = []
+    for _, row in df_res.iterrows():
+        weight = (row['abs_corr'] / total_corr) * 100
+        is_inverse = True if row['corr'] < 0 else False 
+        optimized_config.append({
+            "Name": row['name'],
+            "Weight": float(f"{weight:.1f}"),
+            "Inverse": is_inverse
+        })
+        
+    return optimized_config
 
 # --- 3. 사이드바 UI ---
 st.sidebar.header("🎛️ 퀀트 모델 설정")
@@ -103,10 +161,10 @@ if '005930' in df_stocks['Code'].values:
 
 tab1, tab2 = st.sidebar.tabs(["리스트 검색", "직접 입력"])
 with tab1:
-    selected_label = st.selectbox("종목을 선택하세요", df_stocks['Label'].values, index=default_idx, label_visibility="collapsed")
+    selected_label = st.selectbox("종목 선택", df_stocks['Label'].values, index=default_idx, label_visibility="collapsed")
     ticker_from_list = selected_label.split('(')[-1].replace(')', '')
 with tab2:
-    custom_ticker = st.text_input("티커 입력 (예: JEPI)", "", label_visibility="collapsed")
+    custom_ticker = st.text_input("티커 입력", "", placeholder="예: TSLA", label_visibility="collapsed")
 
 if custom_ticker:
     ticker = custom_ticker.upper()
@@ -117,52 +175,54 @@ else:
 
 # Step 2
 st.sidebar.markdown("---")
-st.sidebar.subheader("Step 2. 경제지표 믹싱 (100%)")
+st.sidebar.subheader("Step 2. 경제지표 믹싱")
 
-indicators_map = {
-    "미국 10년물 금리": "FRED:DGS10", 
-    "원/달러 환율": "FRED:DEXKOUS",
-    "국제유가(WTI)": "FRED:DCOILWTICO", 
-    "나스닥 지수": "FRED:NASDAQCOM",
-    "S&P 500 지수": "FRED:SP500", 
-    "미국 기준금리": "FRED:FEDFUNDS",
-    "달러 인덱스": "FRED:DTWEXBGS",
-    "VIX (공포지수)": "FRED:VIXCLS"
-}
+# 기간 설정 (최적화를 위해 미리 변수 필요)
+period_options = {"6개월": 180, "1년": 365, "2년": 730, "3년": 1095, "5년": 1825}
+selected_period = st.sidebar.select_slider("분석 기간", options=list(period_options.keys()), value="2년")
+days = period_options[selected_period]
+start_date = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
 
-if 'selected_inds' not in st.session_state:
-    st.session_state.selected_inds = ["미국 10년물 금리", "원/달러 환율"]
+# [AI 최적화 버튼]
+if st.sidebar.button("⚡ AI 최적 조합 찾기 (Auto-Fit)", type="primary", use_container_width=True):
+    with st.spinner(f"🤖 {display_name}의 데이터를 분석하여 최적의 모델을 생성 중입니다..."):
+        opt_result = find_optimal_mix(ticker, start_date)
+        
+        if opt_result == "NO_CORRELATION":
+            st.sidebar.warning("⚠️ 유의미한 상관관계를 가진 지표를 찾지 못했습니다. (최근 주가 움직임이 독자적일 수 있습니다)")
+        elif opt_result:
+            st.session_state.optimized_data = opt_result
+            st.sidebar.success(f"✅ 최적 조합 발견! ({len(opt_result)}개 지표)")
+        else:
+            st.sidebar.error("데이터 분석 중 오류가 발생했습니다.")
 
-selected_keys = st.sidebar.multiselect(
-    "지표 추가/삭제",
-    list(indicators_map.keys()),
-    default=st.session_state.selected_inds
-)
+# 데이터 에디터 초기값
+if 'optimized_data' in st.session_state:
+    current_data = st.session_state.optimized_data
+else:
+    # 기본값
+    current_data = [
+        {"Name": "미국 10년물 금리", "Weight": 50.0, "Inverse": True},
+        {"Name": "원/달러 환율", "Weight": 50.0, "Inverse": True}
+    ]
 
-default_weight = 100.0 / len(selected_keys) if selected_keys else 0
+df_config = pd.DataFrame(current_data)
 
-table_data = []
-for key in selected_keys:
-    default_inverse = True if key in ["미국 10년물 금리", "원/달러 환율", "국제유가(WTI)", "미국 기준금리", "VIX (공포지수)"] else False
-    table_data.append({
-        "Name": key, 
-        "Weight": float(f"{default_weight:.1f}"),
-        "Inverse": default_inverse
-    })
-
-df_config = pd.DataFrame(table_data)
-
+st.sidebar.caption("👇 지표 구성 및 비중(%) 수정")
 edited_df = st.sidebar.data_editor(
     df_config,
     column_config={
-        "Name": st.column_config.TextColumn("지표명", disabled=True),
-        "Weight": st.column_config.NumberColumn("비중(%)", min_value=0, max_value=100, step=1, format="%d%%"),
+        "Name": st.column_config.SelectboxColumn("지표명", options=list(INDICATORS_MAP.keys()), required=True),
+        "Weight": st.column_config.NumberColumn("비중(%)", min_value=0, max_value=100, step=0.1, format="%.1f"),
         "Inverse": st.column_config.CheckboxColumn("역방향?")
     },
+    num_rows="dynamic",
     hide_index=True,
-    use_container_width=True
+    use_container_width=True,
+    key="editor"
 )
 
+# 합계 검증
 total_sum = edited_df["Weight"].sum()
 remaining = 100 - total_sum
 
@@ -171,35 +231,25 @@ if abs(remaining) < 0.1:
     is_valid_total = True
 else:
     if remaining > 0:
-        st.sidebar.warning(f"⚠️ 합계 부족: {total_sum:.0f}% (+{remaining:.0f}%)")
+        st.sidebar.warning(f"⚠️ 합계 부족: {total_sum:.1f}% (+{remaining:.1f}%)")
     else:
-        st.sidebar.error(f"🚫 합계 초과: {total_sum:.0f}% ({remaining:.0f}%)")
+        st.sidebar.error(f"🚫 합계 초과: {total_sum:.1f}% ({remaining:.1f}%)")
     is_valid_total = False
 
+# 설정값 변환
 configs = {}
 for index, row in edited_df.iterrows():
-    name = row["Name"]
-    configs[name] = {'code': indicators_map[name], 'weight': row["Weight"], 'inverse': row["Inverse"]}
+    if row["Name"]:
+        configs[row["Name"]] = {'code': INDICATORS_MAP[row["Name"]], 'weight': row["Weight"], 'inverse': row["Inverse"]}
 
-# Step 3
-st.sidebar.markdown("---")
-st.sidebar.subheader("Step 3. 분석 기간")
-period_options = {"6개월": 180, "1년": 365, "2년": 730, "3년": 1095, "5년": 1825}
-selected_period = st.sidebar.select_slider(
-    "기간을 선택하세요", 
-    options=list(period_options.keys()), 
-    value="2년",
-    label_visibility="collapsed"
-)
-start_date = (datetime.now() - timedelta(days=period_options[selected_period])).strftime('%Y-%m-%d')
-
-# --- 4. 데이터 로딩 및 계산 ---
+# --- 4. 메인 로직 (믹싱 계산) ---
 @st.cache_data
 def load_data_mix(stock_code, configs, start):
     try:
         stock = fdr.DataReader(stock_code, start)['Close']
-    except:
-        return None, None, None, None
+        # 주가도 중간에 빈 날짜가 있을 수 있으므로 보간
+        stock = stock.interpolate(method='linear')
+    except: return None, None, None, None
 
     macro_score = pd.Series(0, index=stock.index)
     total_weight = 0
@@ -211,10 +261,11 @@ def load_data_mix(stock_code, configs, start):
             data = fdr.DataReader(conf['code'], start)
             if data.empty: continue
             
-            aligned_data = data.iloc[:, 0].reindex(stock.index, method='ffill')
-            loaded_indicators[name] = aligned_data
-
-            norm = (aligned_data - aligned_data.min()) / (aligned_data.max() - aligned_data.min())
+            # [보완] 데이터 정렬 및 보간
+            aligned = data.iloc[:, 0].reindex(stock.index).interpolate(method='linear').fillna(method='bfill').fillna(method='ffill')
+            loaded_indicators[name] = aligned
+            
+            norm = (aligned - aligned.min()) / (aligned.max() - aligned.min())
             if conf['inverse']: norm = 1 - norm
             
             normalized_indicators[name] = norm
@@ -229,12 +280,12 @@ def load_data_mix(stock_code, configs, start):
 
     return stock, final_macro_index, loaded_indicators, normalized_indicators
 
-# --- 5. 메인 화면 ---
+# --- 5. UI 출력 ---
 st.title(f"📊 {display_name} 퀀트 분석")
 st.markdown("주가와 경제 지표(Macro)를 복합적으로 분석하여 **최적의 매매 타이밍**을 찾습니다.")
 
 if not configs:
-    st.info("👈 사이드바에서 경제지표를 선택하여 분석을 시작하세요.")
+    st.info("👈 사이드바에서 경제지표를 선택하거나 'AI 최적 조합 찾기'를 눌러보세요.")
 else:
     stock_series, macro_series, raw_indicators, norm_indicators = load_data_mix(ticker, configs, start_date)
 
@@ -248,7 +299,6 @@ else:
         last_date = df_final.index[-1].strftime('%Y-%m-%d')
         is_krx = ticker.isdigit()
 
-        # 메트릭 카드
         col1, col2, col3 = st.columns(3)
         with col1:
             if is_krx:
@@ -277,23 +327,17 @@ else:
             st.metric(label="현재 상태 (괴리율)", value=state_emoji, delta=f"Gap: {gap:.2f}", delta_color=delta_color)
 
         if not is_valid_total:
-             st.warning(f"⚠️ 현재 지표 비중 합계가 {total_sum}% 입니다. 정확한 분석을 위해 100%를 맞춰주세요.")
+             st.warning(f"⚠️ 현재 지표 비중 합계가 {total_sum:.1f}% 입니다. 100%를 맞춰주세요.")
 
-        # --- 차트 영역 ---
+        # 차트
         st.subheader("📈 추세 비교 차트")
-        # [수정] 볼드(**) 제거된 깔끔한 텍스트
         st.caption("💡 Tip: 차트 하단의 '기간 슬라이더'를 양쪽으로 드래그하면, 원하는 구간만 확대/축소(Zoom)해서 자세히 볼 수 있습니다.")
         
         fig = go.Figure()
         fig.add_trace(go.Scatter(x=df_final.index, y=df_final['Stock_Norm'], name='주가 (정규화)', line=dict(color='#2962FF', width=2)))
         fig.add_trace(go.Scatter(x=df_final.index, y=df_final['Macro_Norm'], name='매크로 지수', line=dict(color='#FF4081', width=2, dash='dot')))
         
-        fig.update_layout(
-            hovermode="x unified",
-            margin=dict(l=0, r=0, t=10, b=0),
-            legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
-            height=400
-        )
+        fig.update_layout(hovermode="x unified", margin=dict(l=0, r=0, t=10, b=0), legend=dict(orientation="h", y=1.02, x=1), height=400)
         fig.update_xaxes(rangeslider_visible=True)
         st.plotly_chart(fig, use_container_width=True)
 
@@ -308,20 +352,17 @@ else:
                         st.markdown(f"**📌 주가 vs {name}**")
                         sub_fig = make_subplots(specs=[[{"secondary_y": True}]])
                         sub_fig.add_trace(
-                            go.Scatter(x=df_final.index, y=df_final['Stock_Norm'], name="주가", line=dict(color='#bdbdbd', width=1)),
-                            secondary_y=False
+                            go.Scatter(x=df_final.index, y=df_final['Stock_Norm'], name="주가", line=dict(color='#bdbdbd', width=1)), secondary_y=False
                         )
                         score_name = "지표(역)" if configs[name]['inverse'] else "지표(정)"
                         sub_fig.add_trace(
-                            go.Scatter(x=norm_indicators[name].index, y=norm_indicators[name], name=score_name, line=dict(color='#FF4081', width=2)),
-                            secondary_y=True
+                            go.Scatter(x=norm_indicators[name].index, y=norm_indicators[name], name=score_name, line=dict(color='#FF4081', width=2)), secondary_y=True
                         )
                         sub_fig.update_layout(showlegend=False, height=250, margin=dict(l=0, r=0, t=10, b=0))
                         sub_fig.update_yaxes(showticklabels=False)
                         st.plotly_chart(sub_fig, use_container_width=True)
                     idx += 1
 
-        # 용어 설명
         with st.expander("❓ 용어 설명 가이드"):
             st.markdown("""
             * **정규화(Normalization):** 서로 다른 단위의 데이터를 0~1 사이로 변환하여 추세를 비교하는 기술입니다.

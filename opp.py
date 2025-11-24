@@ -8,10 +8,8 @@ from datetime import datetime, timedelta
 # --- 1. 페이지 설정 & 디자인 커스텀 ---
 st.set_page_config(page_title="My Quant Model", layout="wide", page_icon="📈")
 
-# 커스텀 CSS (카드 디자인, 여백 조절)
 st.markdown("""
 <style>
-    /* 메트릭 카드 디자인 */
     div[data-testid="metric-container"] {
         background-color: #f0f2f6;
         border: 1px solid #e0e0e0;
@@ -20,7 +18,6 @@ st.markdown("""
         color: black;
         box-shadow: 2px 2px 5px rgba(0,0,0,0.05);
     }
-    /* 다크모드 대응 (글자색) */
     @media (prefers-color-scheme: dark) {
         div[data-testid="metric-container"] {
             background-color: #262730;
@@ -28,7 +25,6 @@ st.markdown("""
             color: white;
         }
     }
-    /* 상단 여백 줄이기 */
     .block-container {
         padding-top: 2rem;
         padding-bottom: 2rem;
@@ -143,7 +139,6 @@ selected_keys = st.sidebar.multiselect(
     default=st.session_state.selected_inds
 )
 
-# N빵 계산
 default_weight = 100.0 / len(selected_keys) if selected_keys else 0
 
 table_data = []
@@ -253,9 +248,8 @@ else:
         last_date = df_final.index[-1].strftime('%Y-%m-%d')
         is_krx = ticker.isdigit()
 
-        # --- 메트릭 카드 영역 (3열) ---
+        # 메트릭 카드
         col1, col2, col3 = st.columns(3)
-        
         with col1:
             if is_krx:
                 price_text = f"{df_final['Stock'].iloc[-1]:,.0f}원"
@@ -273,42 +267,39 @@ else:
         with col3:
             if gap > 0.3: 
                 state_emoji = "🔴 과열"
-                delta_color = "inverse" # 빨강
+                delta_color = "inverse"
             elif gap < -0.3: 
                 state_emoji = "🔵 저평가"
-                delta_color = "normal" # 초록(파랑)
+                delta_color = "normal"
             else: 
                 state_emoji = "🟢 적정"
-                delta_color = "off" # 회색
-            
+                delta_color = "off"
             st.metric(label="현재 상태 (괴리율)", value=state_emoji, delta=f"Gap: {gap:.2f}", delta_color=delta_color)
 
-        # 100% 경고
         if not is_valid_total:
              st.warning(f"⚠️ 현재 지표 비중 합계가 {total_sum}% 입니다. 정확한 분석을 위해 100%를 맞춰주세요.")
 
-        # --- 메인 차트 ---
+        # --- 차트 영역 ---
         st.subheader("📈 추세 비교 차트")
+        # [NEW] 차트 조작 팁 추가
+        st.caption("💡 **Tip:** 차트 하단의 **'기간 슬라이더'**를 양쪽으로 드래그하면, 원하는 구간만 **확대/축소(Zoom)**해서 자세히 볼 수 있습니다.")
+        
         fig = go.Figure()
         fig.add_trace(go.Scatter(x=df_final.index, y=df_final['Stock_Norm'], name='주가 (정규화)', line=dict(color='#2962FF', width=2)))
         fig.add_trace(go.Scatter(x=df_final.index, y=df_final['Macro_Norm'], name='매크로 지수', line=dict(color='#FF4081', width=2, dash='dot')))
         
-        # 차트 스타일링 update
         fig.update_layout(
             hovermode="x unified",
-            margin=dict(l=0, r=0, t=30, b=0),
+            margin=dict(l=0, r=0, t=10, b=0),
             legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
             height=400
         )
-        # 하단 슬라이더 추가
-        fig.update_xaxes(rangeslider_visible=True)
+        fig.update_xaxes(rangeslider_visible=True) # 슬라이더 활성화
         st.plotly_chart(fig, use_container_width=True)
 
-        # --- 개별 지표 분석 (Expander) ---
+        # 개별 지표 분석
         with st.expander("📊 개별 지표 상세 분석 (클릭해서 열기)", expanded=False):
             st.markdown("##### 내 모델이 주가와 얼마나 비슷하게 움직이는지 확인해보세요.")
-            
-            # 2열로 배치
             cols = st.columns(2)
             idx = 0
             for name in configs.keys():
@@ -326,11 +317,11 @@ else:
                             secondary_y=True
                         )
                         sub_fig.update_layout(showlegend=False, height=250, margin=dict(l=0, r=0, t=10, b=0))
-                        sub_fig.update_yaxes(showticklabels=False) # 축 간소화
+                        sub_fig.update_yaxes(showticklabels=False)
                         st.plotly_chart(sub_fig, use_container_width=True)
                     idx += 1
 
-        # --- 용어 설명 ---
+        # 용어 설명
         with st.expander("❓ 용어 설명 가이드"):
             st.markdown("""
             * **정규화(Normalization):** 서로 다른 단위의 데이터를 0~1 사이로 변환하여 추세를 비교하는 기술입니다.

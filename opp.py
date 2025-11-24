@@ -2,6 +2,7 @@ import streamlit as st
 import FinanceDataReader as fdr
 import pandas as pd
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots # 이중축 그래프용
 from datetime import datetime, timedelta
 
 # 페이지 설정
@@ -35,7 +36,6 @@ def get_stock_list():
     ]
     df_base = pd.DataFrame(base_data)
     
-    # 외부 데이터 로딩 시도 (실패시 base만 사용)
     df_krx = pd.DataFrame()
     df_sp500 = pd.DataFrame()
     try:
@@ -88,7 +88,7 @@ else:
     ticker = ticker_from_list
     display_name = selected_label.split('(')[0]
 
-# --- 3. [NEW] 복합 지표 설정 (Multi-Select) ---
+# --- 3. [NEW] 복합 지표 설정 (Data Editor) ---
 st.sidebar.markdown("---")
 st.sidebar.subheader("📊 경제지표 믹싱 (Mixing)")
 
@@ -103,102 +103,107 @@ indicators_map = {
     "VIX (공포지수)": "FRED:VIXCLS"
 }
 
-# 다중 선택 박스
-selected_indicators = st.sidebar.multiselect(
-    "지표를 여러 개 선택하세요",
+if 'selected_inds' not in st.session_state:
+    st.session_state.selected_inds = ["미국 10년물 금리", "원/달러 환율"]
+
+selected_keys = st.sidebar.multiselect(
+    "사용할 지표를 고르세요",
     list(indicators_map.keys()),
-    default=["미국 10년물 금리", "원/달러 환율"] # 기본값
+    default=st.session_state.selected_inds
 )
 
-# 선택한 지표별 가중치/방향 설정
-configs = {}
-if selected_indicators:
-    st.sidebar.caption("👇 지표별 비중과 방향을 설정하세요")
-    for name in selected_indicators:
-        with st.sidebar.expander(f"⚙️ {name} 설정", expanded=True):
-            # 가중치 (0~10)
-            weight = st.slider(f"중요도 (비중)", 0.0, 10.0, 5.0, key=f"w_{name}")
-            # 역방향 여부 (금리, 환율 등은 보통 역방향)
-            is_inverse = st.checkbox(f"역방향(Inverse) 적용?", value=False, key=f"inv_{name}", 
-                                     help="체크하면 수치가 낮을수록 점수가 높아집니다. (예: 환율/금리가 내리면 주가에 좋다)")
-            configs[name] = {'code': indicators_map[name], 'weight': weight, 'inverse': is_inverse}
+table_data = []
+for key in selected_keys:
+    default_inverse = True if key in ["미국 10년물 금리", "원/달러 환율", "국제유가(WTI)", "미국 기준금리", "VIX (공포지수)"] else False
+    table_data.append({"지표명": key, "가중치(0~10)": 5, "역방향 적용": default_inverse})
 
-# 분석 기간
+df_config = pd.DataFrame(table_data)
+
+st.sidebar.caption("👇 아래 표에서 가중치와 방향을 수정하세요")
+edited_df = st.sidebar.data_editor(
+    df_config,
+    column_config={
+        "지표명": st.column_config.TextColumn("지표", disabled=True),
+        "가중치(0~10)": st.column_config.NumberColumn("비중", min_value=0, max_value=10, step=1),
+        "역방향 적용": st.column_config.CheckboxColumn("역방향?")
+    },
+    hide_index=True,
+    use_container_width=True
+)
+
+configs = {}
+for index, row in edited_df.iterrows():
+    name = row["지표명"]
+    configs[name] = {'code': indicators_map[name], 'weight': row["가중치(0~10)"], 'inverse': row["역방향 적용"]}
+
 st.sidebar.markdown("---")
 period_options = {"6개월": 180, "1년": 365, "2년": 730, "3년": 1095, "5년": 1825}
 selected_period = st.sidebar.radio("기간", list(period_options.keys()), index=2, horizontal=True)
 start_date = (datetime.now() - timedelta(days=period_options[selected_period])).strftime('%Y-%m-%d')
 
-# --- 4. 데이터 로딩 및 계산 ---
+# --- 4. 데이터 로딩 및 계산 (수정됨: 정규화 데이터도 반환) ---
 @st.cache_data
 def load_data_mix(stock_code, configs, start):
-    # 1. 주가 로딩
     try:
         stock = fdr.DataReader(stock_code, start)['Close']
     except:
-        return None, None, None
+        return None, None, None, None
 
-    # 2. 경제지표 로딩 & 합성
-    macro_score = pd.Series(0, index=stock.index) # 0으로 채운 빈 시리즈
+    macro_score = pd.Series(0, index=stock.index)
     total_weight = 0
-    loaded_indicators = {} # 개별 지표 저장용
+    loaded_indicators = {}
+    normalized_indicators = {} # [NEW] 정규화된 개별 데이터 저장
 
     for name, conf in configs.items():
         try:
-            # 지표 가져오기
             data = fdr.DataReader(conf['code'], start)
             if data.empty: continue
             
-            # 주가 날짜에 맞춰 정렬 (reindex) - 보간법 사용
-            # ffill: 앞의 데이터로 채움 (주말/공휴일 등)
             aligned_data = data.iloc[:, 0].reindex(stock.index, method='ffill')
-            loaded_indicators[name] = aligned_data # 나중에 쓰려고 저장
+            loaded_indicators[name] = aligned_data
 
-            # 정규화 (0~1)
+            # 정규화 계산
             norm = (aligned_data - aligned_data.min()) / (aligned_data.max() - aligned_data.min())
             
-            # 역방향 처리 (체크했으면 1에서 뺌)
+            # 역방향 적용
             if conf['inverse']:
                 norm = 1 - norm
             
-            # 가중치 적용 합산
+            # [NEW] 정규화된 데이터 저장 (나중에 그래프 그릴 때 사용)
+            normalized_indicators[name] = norm
+
             macro_score = macro_score.add(norm * conf['weight'], fill_value=0)
             total_weight += conf['weight']
-            
         except:
             pass
             
-    # 최종 점수 산출 (가중 평균)
     if total_weight > 0:
         final_macro_index = macro_score / total_weight
     else:
         final_macro_index = pd.Series(0, index=stock.index)
 
-    return stock, final_macro_index, loaded_indicators
+    return stock, final_macro_index, loaded_indicators, normalized_indicators
 
 # --- 5. 메인 화면 ---
 composite_name = "나만의 매크로 지수 (Custom Macro Index)"
 st.title(f"📈 {display_name} vs {composite_name}")
 
-if not selected_indicators:
+if not configs:
     st.warning("👈 사이드바에서 경제지표를 최소 1개 이상 선택해주세요.")
 else:
-    stock_series, macro_series, raw_indicators = load_data_mix(ticker, configs, start_date)
+    # [NEW] 반환값에 norm_indicators 추가
+    stock_series, macro_series, raw_indicators, norm_indicators = load_data_mix(ticker, configs, start_date)
 
     if stock_series is not None and not stock_series.empty:
-        # 데이터 정리 (NaN 제거)
         df_final = pd.concat([stock_series, macro_series], axis=1).dropna()
         df_final.columns = ['Stock', 'Macro_Index']
 
-        # 정규화 (차트 비교용)
         df_final['Stock_Norm'] = (df_final['Stock'] - df_final['Stock'].min()) / (df_final['Stock'].max() - df_final['Stock'].min())
-        # 매크로 지수는 이미 정규화되어 있지만, 확실하게 0~1로 다시 맞춤 (시각적 통일)
         df_final['Macro_Norm'] = (df_final['Macro_Index'] - df_final['Macro_Index'].min()) / (df_final['Macro_Index'].max() - df_final['Macro_Index'].min())
         
         gap = df_final['Stock_Norm'].iloc[-1] - df_final['Macro_Norm'].iloc[-1]
         last_date = df_final.index[-1].strftime('%Y-%m-%d')
 
-        # --- 상단 메트릭 ---
         is_krx = ticker.isdigit()
         if is_krx:
             price_html = f"<div style='font-size:28px; font-weight:bold;'>{df_final['Stock'].iloc[-1]:,.0f}원</div>"
@@ -217,30 +222,58 @@ else:
         
         col3.metric("괴리율 상태", state, f"{gap:.2f}", help="양수: 주가가 내 지수보다 높음 / 음수: 주가가 내 지수보다 낮음")
 
-        # --- 상세 설정 정보 표시 ---
-        st.info("💡 **현재 적용된 지표 구성:** " + ", ".join([f"{k}(x{v['weight']})" + ("🔄역" if v['inverse'] else "") for k,v in configs.items()]))
+        tags = ""
+        for k, v in configs.items():
+            arrow = "🔄역" if v['inverse'] else "⬆️정"
+            tags += f"`{k} (x{v['weight']}, {arrow})` "
+        st.markdown(f"### 📊 현재 모델 구성: {tags}")
 
-        # --- 차트 그리기 ---
+        # --- 메인 차트 ---
         fig = go.Figure()
-        # 1. 주가
         fig.add_trace(go.Scatter(x=df_final.index, y=df_final['Stock_Norm'], name='주가 (정규화)', line=dict(color='blue', width=2)))
-        # 2. 합성 지표
         fig.add_trace(go.Scatter(x=df_final.index, y=df_final['Macro_Norm'], name='내 매크로 지수', line=dict(color='red', width=2, dash='dot')))
         st.plotly_chart(fig, use_container_width=True)
 
-        # --- [추가 기능] 개별 지표 열람 ---
-        with st.expander("📊 합치기 전, 개별 지표들의 값 보기"):
-            # 데이터프레임으로 만들어서 보여줌
-            indi_df = pd.DataFrame(raw_indicators)
-            st.dataframe(indi_df.tail(10).style.format("{:,.2f}"))
+        # --- [NEW] 개별 지표 그래프 섹션 ---
+        with st.expander("📊 합치기 전, 개별 지표 그래프로 보기 (Click)", expanded=True):
+            st.caption("파란색(왼쪽 축): 실제 원본 값 / 빨간색(오른쪽 축): 설정이 적용된 정규화 점수(0~1)")
             
+            # 선택된 지표들을 순회하며 그래프 생성
+            for name in configs.keys():
+                if name in raw_indicators and name in norm_indicators:
+                    st.subheader(f"📌 {name}")
+                    
+                    # 이중축 그래프 생성
+                    sub_fig = make_subplots(specs=[[{"secondary_y": True}]])
+                    
+                    # 1. 원본 값 (왼쪽 축, 파란색)
+                    sub_fig.add_trace(
+                        go.Scatter(x=raw_indicators[name].index, y=raw_indicators[name], name="실제 값(Raw)", line=dict(color='blue', width=1)),
+                        secondary_y=False
+                    )
+                    
+                    # 2. 정규화된 점수 (오른쪽 축, 빨간색 점선)
+                    # 역방향 적용 여부에 따라 이름 변경
+                    score_name = "정규화 점수 (역방향 적용됨)" if configs[name]['inverse'] else "정규화 점수 (정방향)"
+                    sub_fig.add_trace(
+                        go.Scatter(x=norm_indicators[name].index, y=norm_indicators[name], name=score_name, line=dict(color='red', width=2, dash='dot')),
+                        secondary_y=True
+                    )
+                    
+                    # 축 설정
+                    sub_fig.update_yaxes(title_text="실제 단위 (원, %, pt 등)", secondary_y=False, title_font=dict(color="blue"))
+                    sub_fig.update_yaxes(title_text="점수 (0~1)", secondary_y=True, title_font=dict(color="red"), range=[0, 1.1]) # 점수는 0~1 고정
+                    sub_fig.update_layout(height=350, margin=dict(t=30, b=20)) # 높이 조절
+
+                    st.plotly_chart(sub_fig, use_container_width=True)
+
         with st.expander("❓ '역방향(Inverse)'이 뭔가요?"):
              st.markdown("""
-             - **정방향:** 지표가 오르면 주가에도 좋다. (예: 나스닥 지수, S&P500)
-             - **역방향(Inverse):** 지표가 오르면 주가에는 나쁘다. (예: 환율, 금리, 유가)
+             - **정방향:** 지표가 오르면 주가에도 좋다. (예: 나스닥 지수)
+             - **역방향(Inverse):** 지표가 오르면 주가에는 나쁘다. (예: 환율, 금리)
              
-             여러 지표를 합칠 때, 성격이 반대인 것들을 그냥 더하면 서로 상쇄되어 0이 될 수 있습니다.
-             그래서 **주가에 안 좋은 지표(역방향)는 뒤집어서(1 - 값)** 더해야 올바른 **'투자 매력도 점수'**가 나옵니다.
+             체크박스를 켜면, 해당 지표는 수치가 **내려갈수록 점수가 올라가도록** 계산됩니다.
+             그래프에서 파란선(실제)과 빨간선(점수)이 반대로 움직이는 것을 확인해보세요!
              """)
 
     else:

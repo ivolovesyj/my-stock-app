@@ -7,67 +7,70 @@ from datetime import datetime, timedelta
 # 페이지 설정
 st.set_page_config(page_title="내 손안의 퀀트", layout="wide")
 
-# --- 1. 데이터 캐싱 ---
+# --- 1. 데이터 캐싱 (절대 실패하지 않는 구조로 변경) ---
 @st.cache_data
 def get_stock_list():
-    # A. 한국 주식 (KRX)
-    try:
-        df_krx = fdr.StockListing('KRX')
-        df_krx = df_krx[['Code', 'Name']]
-    except:
-        df_krx = pd.DataFrame({'Code': ['005930'], 'Name': ['삼성전자(데이터 로딩 실패)']})
+    # [1단계] 무조건 있어야 하는 'VIP 기본 리스트' (서버 터져도 이건 뜸)
+    # 여기에 자주 쓰는거 다 넣어둡니다.
+    base_data = [
+        {'Code': '005930', 'Name': '삼성전자'},
+        {'Code': '000660', 'Name': 'SK하이닉스'},
+        {'Code': '005380', 'Name': '현대차'},
+        {'Code': '035420', 'Name': 'NAVER'},
+        {'Code': '035720', 'Name': '카카오'},
+        {'Code': 'AAPL', 'Name': '애플 (Apple)'},
+        {'Code': 'NVDA', 'Name': '엔비디아 (NVIDIA)'},
+        {'Code': 'TSLA', 'Name': '테슬라 (Tesla)'},
+        {'Code': 'MSFT', 'Name': '마이크로소프트 (Microsoft)'},
+        {'Code': 'GOOGL', 'Name': '구글 (Alphabet)'},
+        {'Code': 'AMZN', 'Name': '아마존 (Amazon)'},
+        {'Code': 'DIS', 'Name': '월트 디즈니 (Disney)'},
+        {'Code': 'KO', 'Name': '코카콜라 (Coca-Cola)'},
+        {'Code': 'SBUX', 'Name': '스타벅스 (Starbucks)'},
+        {'Code': 'O', 'Name': '리얼티인컴 (Realty Income)'},
+        {'Code': 'QQQ', 'Name': '나스닥 100 (QQQ)'},
+        {'Code': 'SPY', 'Name': 'S&P 500 (SPY)'},
+        {'Code': 'SCHD', 'Name': '슈왑 배당 (SCHD)'},
+        {'Code': 'JEPI', 'Name': 'JP모건 커버드콜 (JEPI)'},
+        {'Code': 'PLTR', 'Name': '팔란티어 (Palantir)'},
+        {'Code': 'IONQ', 'Name': '아이온큐 (IonQ)'}
+    ]
+    df_base = pd.DataFrame(base_data)
 
-    # B. 미국 S&P 500 (3중 안전장치)
+    # [2단계] 외부 데이터 추가 시도 (실패하면 base만 씀)
+    df_krx = pd.DataFrame()
     df_sp500 = pd.DataFrame()
-    
-    # 시도 1: fdr
+
     try:
-        df_sp500 = fdr.StockListing('S&P500')
-        df_sp500 = df_sp500[['Symbol', 'Name']]
-        df_sp500.columns = ['Code', 'Name']
+        df_krx = fdr.StockListing('KRX')[['Code', 'Name']]
     except:
-        pass
+        pass # 한국 주식 로딩 실패해도 괜찮음
 
-    # 시도 2: GitHub CSV
-    if df_sp500.empty:
-        try:
-            url = "https://raw.githubusercontent.com/datasets/s-and-p-500-companies/master/data/constituents.csv"
-            df_sp500 = pd.read_csv(url)
-            df_sp500 = df_sp500[['Symbol', 'Name']]
-            df_sp500.columns = ['Code', 'Name']
-        except:
-            pass
-            
-    # 시도 3: 비상용 리스트
-    if df_sp500.empty:
-         df_sp500 = pd.DataFrame([
-             {'Code': 'AAPL', 'Name': 'Apple Inc.'},
-             {'Code': 'NVDA', 'Name': 'NVIDIA Corp.'},
-             {'Code': 'DIS', 'Name': 'Walt Disney'},
-             {'Code': 'O', 'Name': 'Realty Income'}
-         ])
+    try:
+        # S&P500 CSV 읽기 시도
+        url = "https://raw.githubusercontent.com/datasets/s-and-p-500-companies/master/data/constituents.csv"
+        df_sp500 = pd.read_csv(url)[['Symbol', 'Name']]
+        df_sp500.columns = ['Code', 'Name']
+        
+        # 한글 이름 매핑 (주요 종목만)
+        korean_map = {'AAPL':'애플', 'NVDA':'엔비디아', 'TSLA':'테슬라', 'MSFT':'마이크로소프트', 'GOOGL':'구글', 'AMZN':'아마존', 'META':'메타', 'NFLX':'넷플릭스'}
+        for code, kor in korean_map.items():
+             mask = df_sp500['Code'] == code
+             if mask.any():
+                 eng = df_sp500.loc[mask, 'Name'].values[0]
+                 df_sp500.loc[mask, 'Name'] = f"{kor} ({eng})"
+    except:
+        pass # 미국 주식 로딩 실패해도 괜찮음
 
-    # 한글 매핑
-    korean_map = {
-        'AAPL': '애플', 'NVDA': '엔비디아', 'TSLA': '테슬라', 'MSFT': '마이크로소프트',
-        'GOOGL': '구글', 'AMZN': '아마존', 'META': '메타', 'NFLX': '넷플릭스',
-        'DIS': '월트 디즈니', 'KO': '코카콜라', 'PEP': '펩시', 'SBUX': '스타벅스',
-        'MCD': '맥도날드', 'NKE': '나이키', 'COST': '코스트코', 'WMT': '월마트',
-        'O': '리얼티인컴', 'JPM': 'JP모건', 'MMM': '3M', 'BA': '보잉'
-    }
+    # [3단계] 다 합치기 (기본 + 한국 + 미국)
+    # concat은 빈 데이터프레임이 있어도 에러 안 남
+    df_total = pd.concat([df_base, df_krx, df_sp500]).drop_duplicates(subset=['Code'])
     
-    for code, kor in korean_map.items():
-        mask = df_sp500['Code'] == code
-        if mask.any():
-            eng_name = df_sp500.loc[mask, 'Name'].values[0]
-            df_sp500.loc[mask, 'Name'] = f"{kor} ({eng_name})"
-
-    df_total = pd.concat([df_krx, df_sp500])
+    # 라벨 만들기
     df_total['Label'] = df_total['Name'] + " (" + df_total['Code'] + ")"
-    
     return df_total
 
-# --- 2. 지표 가이드 ---
+# --- 2. 지표별 가이드 ---
 indicator_guide = {
     "미국 10년물 국채금리": {"desc": "전 세계 자산의 기준이 되는 '돈의 몸값'", "relation": "📉 역의 관계 (금리↑ 주가↓)", "tip": "금리가 오르면 안전한 채권으로 돈이 쏠려 주식(특히 기술주)엔 악재입니다."},
     "원/달러 환율": {"desc": "달러 1개를 사기 위한 한국 돈의 액수", "relation": "📉 역의 관계 (환율↑ 코스피↓)", "tip": "환율 급등은 외국인 자금 이탈을 부릅니다. 단, 수출 기업에겐 호재일 수 있습니다."},
@@ -77,46 +80,41 @@ indicator_guide = {
     "미국 기준금리": {"desc": "미국 연준(Fed)의 정책 금리", "relation": "📉 역의 관계", "tip": "돈줄을 죄는 신호입니다. 금리 인상은 주식 시장에 하락 압력을 줍니다."}
 }
 
-# --- 3. 사이드바 ---
+# --- 3. 사이드바 (여기가 중요!) ---
 st.sidebar.title("🔍 분석 옵션")
 
-# A. 리스트 검색
-try:
-    with st.spinner('리스트 로딩 중...'):
-        df_stocks = get_stock_list()
-    
-    default_idx = 0
-    if '005930' in df_stocks['Code'].values:
-         default_idx = df_stocks.index[df_stocks['Code'] == '005930'].tolist()[0]
+# 리스트 로딩 (실패란 없다)
+with st.spinner('종목 리스트 준비 중...'):
+    df_stocks = get_stock_list()
 
-    selected_label = st.sidebar.selectbox(
-        "1. 리스트에서 검색", 
-        df_stocks['Label'].values,
-        index=default_idx if default_idx < len(df_stocks) else 0,
-        help="🚀 S&P 500 전 종목 + 한국 주식이 포함됩니다."
-    )
-    ticker_from_list = selected_label.split('(')[-1].replace(')', '')
-except:
-    # [여기가 수정된 부분입니다!] 
-    # 에러가 나면 무조건 삼성전자를 기본값으로 세팅해서 NameError 방지
-    ticker_from_list = "005930"
-    selected_label = "삼성전자 (005930)"
+# [1] 리스트 검색창 (무조건 뜹니다)
+default_idx = 0
+if '005930' in df_stocks['Code'].values:
+    default_idx = df_stocks.index[df_stocks['Code'] == '005930'].tolist()[0]
 
-# B. 직접 입력
+selected_label = st.sidebar.selectbox(
+    "1. 리스트에서 검색", 
+    df_stocks['Label'].values,
+    index=default_idx if default_idx < len(df_stocks) else 0,
+    help="기본 VIP 종목 + KRX + S&P500이 포함되어 있습니다."
+)
+ticker_from_list = selected_label.split('(')[-1].replace(')', '')
+
+# [2] 직접 입력창
 st.sidebar.markdown("---") 
 custom_ticker = st.sidebar.text_input(
     "2. 직접 입력 (티커)", 
     "",
     placeholder="예: JEPI, SCHD",
-    help="💡 리스트에 없는 종목은 티커를 직접 입력하세요."
+    help="리스트에 없는 종목은 여기에 티커를 입력하세요."
 )
 
+# 최종 티커 결정
 if custom_ticker:
     ticker = custom_ticker.upper()
     display_name = ticker
 else:
     ticker = ticker_from_list
-    # 여기가 에러 났던 곳인데, 위에서 selected_label을 비상 정의해줬으므로 이제 안전함!
     display_name = selected_label.split('(')[0]
 
 # --- 설정 계속 ---

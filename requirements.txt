@@ -1,5 +1,7 @@
 streamlit
 finance-datareader
 plotly
+pandas
 lxml
 openpyxl
+statsmodels

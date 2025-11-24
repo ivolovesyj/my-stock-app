@@ -88,7 +88,7 @@ else:
     ticker = ticker_from_list
     display_name = selected_label.split('(')[0]
 
-# --- 3. [NEW] 복합 지표 설정 (Data Editor) ---
+# --- 3. [수정됨] 복합 지표 설정 (안전한 영어 변수명 사용) ---
 st.sidebar.markdown("---")
 st.sidebar.subheader("📊 경제지표 믹싱 (Total 100%)")
 
@@ -118,10 +118,11 @@ default_weight = 100.0 / len(selected_keys) if selected_keys else 0
 table_data = []
 for key in selected_keys:
     default_inverse = True if key in ["미국 10년물 금리", "원/달러 환율", "국제유가(WTI)", "미국 기준금리", "VIX (공포지수)"] else False
+    # [수정] 컬럼명을 영어(Weight, Inverse)로 변경하여 에러 방지
     table_data.append({
-        "지표명": key, 
-        "비중(%)": float(f"{default_weight:.1f}"),
-        "역방향": default_inverse
+        "Name": key, 
+        "Weight": float(f"{default_weight:.1f}"),
+        "Inverse": default_inverse
     })
 
 df_config = pd.DataFrame(table_data)
@@ -130,15 +131,16 @@ st.sidebar.caption("👇 합계 100%가 되도록 비중을 조절하세요.")
 edited_df = st.sidebar.data_editor(
     df_config,
     column_config={
-        "지표명": st.column_config.TextColumn("지표", disabled=True),
-        "비중(%)": st.column_config.NumberColumn("비중", min_value=0, max_value=100, step=1, format="%d%%"),
-        "역방향": st.column_config.CheckboxColumn("역방향?")
+        "Name": st.column_config.TextColumn("지표명", disabled=True), # 보여질 땐 한글
+        "Weight": st.column_config.NumberColumn("비중(%)", min_value=0, max_value=100, step=1, format="%d%%"), # 보여질 땐 비중(%)
+        "Inverse": st.column_config.CheckboxColumn("역방향 적용?")
     },
     hide_index=True,
     use_container_width=True
 )
 
-total_sum = edited_df["비중(%)"].sum()
+# [수정] 영어 컬럼명 'Weight'로 접근 (안전함)
+total_sum = edited_df["Weight"].sum()
 remaining = 100 - total_sum
 
 if abs(remaining) < 0.1:
@@ -151,10 +153,11 @@ else:
         st.sidebar.error(f"🚫 현재 {total_sum:.0f}% (초과: {remaining:.0f}%)")
     is_valid_total = False
 
+# 설정값 변환
 configs = {}
 for index, row in edited_df.iterrows():
-    name = row["지표명"]
-    configs[name] = {'code': indicators_map[name], 'weight': row["비중(%)"], 'inverse': row["역방향"]}
+    name = row["Name"]
+    configs[name] = {'code': indicators_map[name], 'weight': row["Weight"], 'inverse': row["Inverse"]}
 
 st.sidebar.markdown("---")
 period_options = {"6개월": 180, "1년": 365, "2년": 730, "3년": 1095, "5년": 1825}
@@ -247,43 +250,46 @@ else:
         if not is_valid_total:
              st.caption(f"⚠️ 주의: 현재 비중 합계가 {total_sum}% 입니다. 100%를 맞추면 더 정확한 분석이 가능합니다.")
 
-        # 메인 차트
         fig = go.Figure()
         fig.add_trace(go.Scatter(x=df_final.index, y=df_final['Stock_Norm'], name='주가 (정규화)', line=dict(color='blue', width=2)))
         fig.add_trace(go.Scatter(x=df_final.index, y=df_final['Macro_Norm'], name='내 매크로 지수', line=dict(color='red', width=2, dash='dot')))
         st.plotly_chart(fig, use_container_width=True)
 
-        # --- [수정된 부분] 개별 지표 vs 주가 비교 ---
         with st.expander("📊 합치기 전, 개별 지표 vs 주가 비교 (Click)", expanded=True):
-            st.caption("내가 만든 '개별 점수'가 '주가'와 실제로 같이 움직이는지 확인해보세요.")
-            st.caption("파란선: 주가 (정규화) / 빨간 점선: 해당 지표 점수 (0~1)")
+            st.caption("파란색(왼쪽 축): 주가(정규화) / 빨간 점선(오른쪽 축): 해당 지표의 점수")
             
             for name in configs.keys():
                 if name in raw_indicators and name in norm_indicators:
                     st.subheader(f"📌 주가 vs {name}")
                     
-                    fig_ind = go.Figure()
-                    
-                    # 1. 주가 (기준)
-                    fig_ind.add_trace(
-                        go.Scatter(x=df_final.index, y=df_final['Stock_Norm'], name="주가 (정규화)", line=dict(color='blue', width=1.5))
+                    sub_fig = make_subplots(specs=[[{"secondary_y": True}]])
+                    sub_fig.add_trace(
+                        go.Scatter(x=df_final.index, y=df_final['Stock_Norm'], name="주가 (정규화)", line=dict(color='blue', width=1.5)),
+                        secondary_y=False
                     )
-                    
-                    # 2. 개별 지표 점수
                     score_name = "지표 점수 (역방향)" if configs[name]['inverse'] else "지표 점수 (정방향)"
-                    fig_ind.add_trace(
-                        go.Scatter(x=norm_indicators[name].index, y=norm_indicators[name], name=score_name, line=dict(color='red', width=2, dash='dot'))
+                    sub_fig.add_trace(
+                        go.Scatter(x=norm_indicators[name].index, y=norm_indicators[name], name=score_name, line=dict(color='red', width=2, dash='dot')),
+                        secondary_y=True
                     )
-                    
-                    # 레이아웃 (축이 하나라 깔끔함)
-                    fig_ind.update_layout(height=350, margin=dict(t=30, b=20), hovermode="x unified")
-                    st.plotly_chart(fig_ind, use_container_width=True)
+                    sub_fig.update_yaxes(title_text="주가 추세", secondary_y=False)
+                    sub_fig.update_yaxes(title_text="지표 점수 (0~1)", secondary_y=True, range=[0, 1.1])
+                    sub_fig.update_layout(height=350, margin=dict(t=30, b=20))
+                    st.plotly_chart(sub_fig, use_container_width=True)
 
-        with st.expander("❓ 가중치와 역방향 설정 팁"):
-             st.markdown("""
-             - **가중치 (Total 100%):** 중요도입니다. 합계가 100이 되도록 맞춰주세요.
-             - **역방향(Inverse):** 환율, 금리처럼 '오르면 안 좋은' 지표는 체크하세요.
-             """)
+        with st.expander("❓ 정규화와 괴리율이 무엇인가요? (용어 설명 보기)"):
+            st.markdown("""
+            ### 1. 정규화 (Normalization)란? 🤔
+            주가(예: 100,000원)와 경제지표(예: 4.5%)는 단위가 달라서 직접 비교할 수가 없습니다.
+            그래서 두 데이터를 똑같이 **0점(최저) ~ 1점(최고)** 사이의 점수로 변환해서, **'추세(Trend)'만 비교하는 기술**입니다.
+            
+            ---
+            
+            ### 2. 괴리율 (Gap)이란? 🐕
+            유명한 투자자 앙드레 코스톨라니는 **'경제는 주인이고, 주가는 강아지다'**라고 했습니다.
+            * **괴리율이 크다 (+):** 강아지가 주인보다 너무 멀리 앞서갔습니다. (주가 과열)
+            * **괴리율이 작다 (-):** 강아지가 주인보다 너무 뒤쳐졌습니다. (주가 저평가)
+            """)
 
     else:
         st.error("데이터 로딩 실패. 종목 코드나 날짜를 확인해주세요.")

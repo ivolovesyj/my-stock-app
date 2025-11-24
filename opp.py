@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 import time
 
 # --- 1. 페이지 설정 ---
-st.set_page_config(page_title="My Quant Model", layout="wide", page_icon="📈")
+st.set_page_config(page_title="My Quant Model (Pro)", layout="wide", page_icon="📈")
 
 st.markdown("""
 <style>
@@ -36,7 +36,8 @@ INDICATORS_MAP = {
     "미국 10년물 금리": "FRED:DGS10", "원/달러 환율": "FRED:DEXKOUS",
     "국제유가(WTI)": "FRED:DCOILWTICO", "나스닥 지수": "FRED:NASDAQCOM",
     "S&P 500 지수": "FRED:SP500", "미국 기준금리": "FRED:FEDFUNDS",
-    "달러 인덱스": "FRED:DTWEXBGS", "VIX (공포지수)": "FRED:VIXCLS"
+    "달러 인덱스": "FRED:DTWEXBGS", "VIX (공포지수)": "FRED:VIXCLS",
+    "M2 통화량": "FRED:M2SL", "미국 실업률": "FRED:UNRATE"
 }
 
 @st.cache_data
@@ -69,9 +70,9 @@ def get_exchange_rate():
         return df['Close'].iloc[-1], df.index[-1].strftime('%Y-%m-%d')
     except: return 1400.0, datetime.now().strftime('%Y-%m-%d')
 
-# --- 알고리즘 함수 ---
-def find_optimal_mix(stock_code, start_date, progress_bar=None, status_text=None):
-    if status_text: status_text.text("🔍 1/4단계: 데이터 수집 중...")
+# --- [UPGRADE] 시차 적용 알고리즘 ---
+def find_optimal_mix(stock_code, start_date, lag_days=0, progress_bar=None, status_text=None):
+    if status_text: status_text.text("🔍 1/4단계: 주가 데이터 수집 및 시차 적용...")
     if progress_bar: progress_bar.progress(10)
     time.sleep(0.1)
 
@@ -80,9 +81,16 @@ def find_optimal_mix(stock_code, start_date, progress_bar=None, status_text=None
         if stock.empty: return None
     except: return None
 
-    stock_norm = (stock - stock.min()) / (stock.max() - stock.min())
+    # [핵심] 주가 데이터를 미래로 당겨오거나(Shift -), 지표를 과거로 미룸.
+    # 여기서는 '지표(오늘)' vs '주가(미래)'를 비교하기 위해 주가를 -lag_days 만큼 shift 합니다.
+    # 예: lag=20이면, 오늘의 지표값과 20일 뒤의 주가값을 같은 행에 둡니다.
+    target_stock = stock.shift(-lag_days).dropna()
+    
+    # 비교를 위해 인덱스 교집합(common index)만 남김
+    common_index = target_stock.index
+    target_stock_norm = (target_stock - target_stock.min()) / (target_stock.max() - target_stock.min())
 
-    if status_text: status_text.text("📊 2/4단계: 상관관계 분석 중...")
+    if status_text: status_text.text(f"📊 2/4단계: {lag_days}일 선행 지표 스캔 중...")
     if progress_bar: progress_bar.progress(30)
     
     results = []
@@ -93,10 +101,21 @@ def find_optimal_mix(stock_code, start_date, progress_bar=None, status_text=None
         try:
             indi = fdr.DataReader(code, start_date)
             if indi.empty: continue
-            aligned = indi.iloc[:, 0].reindex(stock.index).interpolate(method='linear').fillna(method='bfill').fillna(method='ffill')
-            indi_norm = (aligned - aligned.min()) / (aligned.max() - aligned.min())
-            corr = stock_norm.corr(indi_norm)
+            
+            # 주가 인덱스에 맞춰 지표 정렬 (보간법 사용)
+            aligned_indi = indi.iloc[:, 0].reindex(stock.index).interpolate(method='linear').fillna(method='bfill').fillna(method='ffill')
+            
+            # 시차 적용된 주가 인덱스와 맞춤
+            aligned_indi = aligned_indi.loc[common_index]
+            
+            if aligned_indi.empty: continue
+
+            indi_norm = (aligned_indi - aligned_indi.min()) / (aligned_indi.max() - aligned_indi.min())
+            
+            # 상관계수 계산
+            corr = target_stock_norm.corr(indi_norm)
             if pd.isna(corr): continue
+            
             results.append({'name': name, 'corr': corr, 'abs_corr': abs(corr)})
         except: continue
     
@@ -106,7 +125,9 @@ def find_optimal_mix(stock_code, start_date, progress_bar=None, status_text=None
     if progress_bar: progress_bar.progress(80)
     
     df_res = pd.DataFrame(results)
+    # 상관계수 0.3 이상만 필터링
     df_res = df_res[df_res['abs_corr'] >= 0.3].sort_values('abs_corr', ascending=False).head(3)
+    
     if df_res.empty: return "NO_CORRELATION"
 
     total_corr = df_res['abs_corr'].sum()
@@ -143,24 +164,29 @@ ticker = custom_tk.upper() if custom_tk else ticker_list
 display_name = ticker if custom_tk else sel_label.split('(')[0]
 
 st.sidebar.markdown("---")
-st.sidebar.subheader("Step 2. 경제지표 믹싱")
+st.sidebar.subheader("Step 2. 지표 분석 설정")
 
-# 분석 기간 먼저 정의
+# [NEW] 시차(Lag) 설정
+lag_days = st.sidebar.slider("⏳ 지표 선행 기간 (일)", 0, 60, 0, help="지표가 주가보다 며칠 먼저 움직이는지 분석합니다. (예: 20일 설정 시, 20일 전 지표와 오늘 주가 비교)")
+
+# 분석 기간
 period_opt = {"6개월": 180, "1년": 365, "2년": 730, "3년": 1095, "5년": 1825}
 sel_period = st.sidebar.select_slider("분석 기간", list(period_opt.keys()), value="2년")
 days = period_opt[sel_period]
 start_date = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
 
-if st.sidebar.button("⚡ AI 최적 조합 찾기", type="primary", use_container_width=True):
+# AI 최적화 버튼
+if st.sidebar.button("⚡ AI 최적 조합 찾기 (Auto-Fit)", type="primary", use_container_width=True):
     stat = st.sidebar.empty()
     prog = st.sidebar.progress(0)
-    res = find_optimal_mix(ticker, start_date, prog, stat)
+    # lag_days를 넘겨줍니다
+    res = find_optimal_mix(ticker, start_date, lag_days, prog, stat)
     stat.empty(); prog.empty()
     
-    if res == "NO_CORRELATION": st.sidebar.warning("유의미한 지표 없음")
+    if res == "NO_CORRELATION": st.sidebar.warning("유의미한 지표 없음 (독자적 움직임)")
     elif res:
         st.session_state.opt_data = res
-        st.sidebar.success(f"최적 조합 {len(res)}개 발견!")
+        st.sidebar.success(f"최적 조합 {len(res)}개 발견! (시차 {lag_days}일 적용)")
         st.rerun()
     else: st.sidebar.error("오류 발생")
 
@@ -181,11 +207,15 @@ else: st.sidebar.warning(f"⚠️ 합계 {tot_sum:.1f}%")
 
 configs = {r["Name"]: {'code': INDICATORS_MAP[r["Name"]], 'weight': r["Weight"], 'inverse': r["Inverse"]} for _, r in ed_df.iterrows() if r["Name"]}
 
-# --- 4. 메인 로직 ---
+# --- 4. 메인 로직 (시차 적용 데이터 로딩) ---
 @st.cache_data
-def load_data_mix(stock_code, configs, start):
+def load_data_mix(stock_code, configs, start, lag=0):
     try: stock = fdr.DataReader(stock_code, start)['Close'].interpolate()
     except: return None, None, None, None
+    
+    # 주가는 그대로 두고 (현재 기준), 지표 점수 계산 시 과거 데이터를 가져오는 방식이 아니라
+    # 시각화를 위해 '지표 데이터를 미래로 미는(Shift)' 방식을 씁니다.
+    # 그래야 차트에서 "20일 전 지표"가 "오늘 주가"와 같은 x축에 찍힙니다.
     
     macro = pd.Series(0, index=stock.index)
     raws = {}; norms = {}
@@ -195,10 +225,19 @@ def load_data_mix(stock_code, configs, start):
         try:
             d = fdr.DataReader(conf['code'], start)
             if d.empty: continue
-            align = d.iloc[:,0].reindex(stock.index).interpolate().fillna(method='bfill').fillna(method='ffill')
-            raws[name] = align
-            nm = (align - align.min()) / (align.max() - align.min())
+            
+            # 원본 데이터 정렬
+            aligned = d.iloc[:,0].reindex(stock.index).interpolate().fillna(method='bfill').fillna(method='ffill')
+            raws[name] = aligned
+            
+            # [UPGRADE] 시차 적용 (지표를 미래로 밈 -> 선행지표 확인용)
+            # lag가 20이면, 오늘의 주가 위치에 20일 전 지표값이 옴.
+            shifted_aligned = aligned.shift(lag) 
+            
+            # 정규화 (Shift된 데이터 기준)
+            nm = (shifted_aligned - shifted_aligned.min()) / (shifted_aligned.max() - shifted_aligned.min())
             if conf['inverse']: nm = 1 - nm
+            
             norms[name] = nm
             macro = macro.add(nm * conf['weight'], fill_value=0)
             total_w += conf['weight']
@@ -212,18 +251,18 @@ st.title(f"📊 {display_name} 퀀트 분석")
 
 if not configs: st.info("사이드바 설정을 확인하세요.")
 else:
-    stock, macro, raws, norms = load_data_mix(ticker, configs, start_date)
+    # lag_days 전달
+    stock, macro, raws, norms = load_data_mix(ticker, configs, start_date, lag_days)
     
     if stock is not None:
+        # 데이터 병합 (NaN 제거 - 시차 때문에 앞부분이 비게 됨)
         df = pd.concat([stock, macro], axis=1).dropna()
         df.columns = ['Stock', 'Macro']
         
-        # 메인 차트용 정규화
         df['Stock_N'] = (df['Stock'] - df['Stock'].min()) / (df['Stock'].max() - df['Stock'].min())
         df['Macro_N'] = (df['Macro'] - df['Macro'].min()) / (df['Macro'].max() - df['Macro'].min())
         gap = df['Stock_N'].iloc[-1] - df['Macro_N'].iloc[-1]
         
-        # --- 메트릭 ---
         c1, c2, c3 = st.columns(3)
         last_dt = df.index[-1].strftime('%Y-%m-%d')
         is_krx = ticker.isdigit()
@@ -236,26 +275,33 @@ else:
                 sub = f"약 {df['Stock'].iloc[-1]*rate:,.0f}원"
             st.metric(f"주가 ({last_dt})", val, sub, delta_color="off")
             
-        with c2: st.metric("내 매크로 점수", f"{df['Macro'].iloc[-1]:.2f} 점", "0~1 Scale")
+        with c2: 
+            # 시차 표시 추가
+            lag_info = f"(시차 {lag_days}일 적용)" if lag_days > 0 else "(동행)"
+            st.metric(f"내 매크로 점수 {lag_info}", f"{df['Macro'].iloc[-1]:.2f} 점", "0~1 Scale")
         
         with c3:
             if gap > 0.3: st.metric("괴리율 상태", "🔴 과열", f"Gap {gap:.2f}", delta_color="inverse")
             elif gap < -0.3: st.metric("괴리율 상태", "🔵 저평가", f"Gap {gap:.2f}", delta_color="normal")
             else: st.metric("괴리율 상태", "🟢 적정", f"Gap {gap:.2f}", delta_color="off")
 
-        # --- 차트 ---
+        # 차트
         st.subheader("📈 추세 비교")
-        st.caption("💡 Tip: 차트 하단의 '기간 슬라이더'를 드래그하여 확대/축소할 수 있습니다.")
+        
+        # 안내 문구 강화
+        if lag_days > 0:
+            st.info(f"ℹ️ 현재 **{lag_days}일 선행 분석** 모드입니다. 차트의 빨간 점선은 **{lag_days}일 전의 경제지표**를 오늘 날짜로 당겨서 보여줍니다. (즉, 빨간 선이 파란 선보다 먼저 움직이는지 확인하세요!)")
+        
         fig = go.Figure()
         fig.add_trace(go.Scatter(x=df.index, y=df['Stock_N'], name='주가(정규화)', line=dict(color='blue')))
-        fig.add_trace(go.Scatter(x=df.index, y=df['Macro_N'], name='매크로 모델', line=dict(color='red', dash='dot')))
+        fig.add_trace(go.Scatter(x=df.index, y=df['Macro_N'], name=f'매크로 모델 (Lag {lag_days})', line=dict(color='red', dash='dot')))
         fig.update_xaxes(rangeslider_visible=True)
         fig.update_layout(hovermode="x unified", height=400, margin=dict(t=10, b=0))
         st.plotly_chart(fig, use_container_width=True)
 
-        # --- 예측력 검증 (Backtest) 업그레이드 ---
+        # 예측력 검증
         st.markdown("---")
-        st.subheader("🔮 이 모델의 예측력 검증 (Backtest)")
+        st.subheader("🔮 이 모델의 예측력 검증")
         
         analysis_df = pd.DataFrame({
             'Gap': df['Stock_N'] - df['Macro_N'],
@@ -264,64 +310,40 @@ else:
 
         if not analysis_df.empty:
             corr_predict = analysis_df['Gap'].corr(analysis_df['Next_Return'])
-            
-            # [핵심] 점수 변환 로직 (0~100점)
-            # 상관계수가 -1에 가까울수록(음수) 좋은 모델 -> 100점
-            # 상관계수가 0 이상(양수)이면 -> 0점 (예측 실패)
-            if corr_predict < 0:
-                score = int(abs(corr_predict) * 100)
-            else:
-                score = 0 # 양의 상관관계는 우리 모델(평균회귀)과 맞지 않음
+            if corr_predict < 0: score = int(abs(corr_predict) * 100)
+            else: score = 0
 
             c_res1, c_res2 = st.columns([1, 2])
-            
             with c_res1:
                 st.markdown("#### 🤖 AI 신뢰도 점수")
-                
-                # 점수별 멘트 및 색상
                 if score >= 60:
-                    score_color = "green"
-                    msg = "✅ **매우 높음**\n\n믿고 쓰셔도 됩니다. 과거에도 척척 맞췄네요!"
+                    msg = "✅ **매우 높음**\n\n선행성이 확인되었습니다!"
                 elif score >= 30:
-                    score_color = "orange"
-                    msg = "⚠️ **보통**\n\n참고용으로만 보세요. 반반 확률입니다."
+                    msg = "⚠️ **보통**\n\n참고용으로만 보세요."
                 else:
-                    score_color = "red"
-                    msg = "❌ **낮음**\n\n이 지표 조합은 잘 안 맞아요. 다시 설정해보세요."
-
-                # 점수 표시 (Progress Bar + Text)
-                st.metric("점수 (100점 만점)", f"{score}점")
+                    msg = "❌ **낮음**\n\n예측력이 없습니다."
+                st.metric("점수", f"{score}점")
                 st.progress(score)
-                st.markdown(f"상관계수: {corr_predict:.2f}")
                 st.info(msg)
 
             with c_res2:
                 try:
                     fig_scat = px.scatter(
                         analysis_df, x='Gap', y='Next_Return', 
-                        trendline="ols", 
-                        trendline_color_override="red",
-                        title="괴리율(X) vs 1개월 뒤 수익률(Y)",
-                        opacity=0.3
+                        trendline="ols", trendline_color_override="red",
+                        title="괴리율(X) vs 미래수익률(Y)", opacity=0.3
                     )
                 except:
                     fig_scat = px.scatter(analysis_df, x='Gap', y='Next_Return', title="괴리율 vs 수익률", opacity=0.3)
-                
                 fig_scat.update_layout(height=350)
                 st.plotly_chart(fig_scat, use_container_width=True)
 
-        # 개별 지표 탭
-        with st.expander("📊 개별 지표 상세 보기"):
-            cols = st.columns(2)
-            for i, name in enumerate(configs.keys()):
-                if name in norms:
-                    with cols[i%2]:
-                        fig_sub = make_subplots(specs=[[{"secondary_y": True}]])
-                        fig_sub.add_trace(go.Scatter(x=df.index, y=df['Stock_N'], name="주가", line=dict(color='#ccc')), secondary_y=False)
-                        fname = f"{name} (역)" if configs[name]['inverse'] else name
-                        fig_sub.add_trace(go.Scatter(x=norms[name].index, y=norms[name], name=fname, line=dict(color='blue')), secondary_y=True)
-                        fig_sub.update_layout(title=name, height=250, showlegend=False, margin=dict(t=30,b=0))
-                        fig_sub.update_yaxes(showticklabels=False)
-                        st.plotly_chart(fig_sub, use_container_width=True)
+        # 주의사항 (아이스크림 오류)
+        with st.expander("⚠️ 분석 시 주의사항 (필독!)"):
+            st.markdown("""
+            1.  **아이스크림과 상어 오류:** 상관관계가 높다고 해서 반드시 인과관계가 있는 것은 아닙니다. (우연의 일치일 수 있음)
+            2.  **후행성:** 이 알고리즘은 '과거 데이터'에 최적화되어 있습니다. 시장의 판도가 바뀌면(예: 금리 장세 -> 실적 장세) 예측력이 떨어질 수 있습니다.
+            3.  **Lag(시차):** '지표 선행 기간'을 조절해보며, 빨간 점선이 파란 실선보다 먼저 꺾이는지 확인하는 것이 진짜 고수의 분석법입니다.
+            """)
 
     else: st.error("데이터 없음")

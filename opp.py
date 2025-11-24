@@ -119,7 +119,7 @@ indicators = {
 selected_name = st.sidebar.selectbox("비교할 경제지표", list(indicators.keys()))
 selected_code = indicators[selected_name]
 
-# --- [수정 2] 분석 기간을 년 단위 버튼으로 변경 ---
+# 분석 기간 설정 (버튼식)
 st.sidebar.markdown("---") 
 st.sidebar.subheader("📅 분석 기간 설정")
 period_options = {
@@ -129,11 +129,10 @@ period_options = {
     "3년": 1095,
     "5년": 1825
 }
-# 가로형 버튼(pills 느낌)으로 선택
 selected_period = st.sidebar.radio(
     "기간을 선택하세요", 
     list(period_options.keys()), 
-    index=2, # 기본값 2년
+    index=2, 
     horizontal=True,
     label_visibility="collapsed"
 )
@@ -168,15 +167,13 @@ if df is not None and not df.empty:
     is_krx = ticker.isdigit()
     exchange_rate_info = ""
 
-    # --- [수정 1] 주가 표시를 HTML로 커스텀 (잘림 방지) ---
+    # 주가 표시 (HTML)
     if is_krx:
-        # 한국 주식
         price_html = f"""
         <div style="font-size: 14px; color: gray; margin-bottom: -5px;">주가 (종가 기준, {last_date})</div>
         <div style="font-size: 32px; font-weight: bold;">{current_price:,.0f}원</div>
         """
     else:
-        # 미국 주식 (줄바꿈 및 작은 글씨 적용)
         ex_rate, ex_date = get_exchange_rate()
         krw_price = current_price * ex_rate
         exchange_rate_info = f"💱 환율: {ex_rate:,.2f}원 ({ex_date})"
@@ -192,25 +189,10 @@ if df is not None and not df.empty:
     macro_value_display = f"{df['Macro'].iloc[-1]:,.2f} {unit}"
 
     col1, col2, col3 = st.columns(3)
-    
-    # col1: 주가 (커스텀 HTML 사용)
     col1.markdown(price_html, unsafe_allow_html=True)
-    
-    # col2: 지표 (기존 방식)
     col2.metric(f"지표 (종가 기준, {last_date})", macro_value_display)
     
-    # col3: 괴리율 상태 + [수정 3] 툴팁(?)에 설명 넣기
-    if gap > 0.5:
-        state = "🔴 과열 (조심!)"
-        msg = "주가가 지표보다 너무 높습니다. 단기 급등 주의!"
-    elif gap < -0.5:
-        state = "🔵 침체 (기회?)"
-        msg = "주가가 지표보다 너무 낮습니다. 저평가 가능성!"
-    else:
-        state = "🟢 적정 (동행)"
-        msg = "지표와 비슷하게 움직이고 있습니다."
-    
-    # 여기가 핵심! help 파라미터에 긴 설명을 넣었습니다.
+    # 툴팁 텍스트 (정의 설명)
     tooltip_text = """
     🤔 정규화 (Normalization)란?
     서로 단위가 다른 주가와 지표를 0~1 사이 점수로 변환해 '추세'만 비교하는 것입니다.
@@ -220,18 +202,53 @@ if df is not None and not df.empty:
     - 양수(+)가 크면: 강아지가 너무 앞서감 (과열)
     - 음수(-)가 크면: 강아지가 뒤처짐 (저평가)
     """
+    
+    # 상태 결정
+    if gap > 0.5:
+        state = "🔴 과열 (조심!)"
+    elif gap < -0.5:
+        state = "🔵 침체 (기회?)"
+    else:
+        state = "🟢 적정 (동행)"
+
     col3.metric("괴리율 상태", state, f"{gap:.2f}", help=tooltip_text)
 
-    # 환율 정보 표시
+    # 환율 정보
     if exchange_rate_info:
         st.caption(exchange_rate_info)
 
-    # 투자 포인트 (기존 하단 설명)
-    if guide:
-        with st.expander(f"💡 '{selected_name}' 투자 포인트 확인하기", expanded=True):
-            st.markdown(f"**[{guide['desc']}]**\n\n{guide['relation']} \n\n 👉 **Tip:** {guide['tip']}")
-        st.info(f"📢 AI 코멘트: {msg}")
+    # --- [복구됨] AI 상세 코멘트 섹션 ---
+    # 다시 색깔별 박스(error/info/success)를 사용하여 자세한 설명을 보여줍니다.
+    st.markdown("### 🤖 AI 분석 리포트")
+    
+    if gap > 0.5:
+        st.error(f"""
+        **🚨 [경고] 주가가 경제 지표보다 과도하게 높습니다! (Gap: {gap:.2f})**
+        
+        현재 주가가 실물 지표(펀더멘털)보다 훨씬 빠르게 올랐습니다. 
+        단기적인 급등에 따른 **'거품'**일 가능성이 있으니 추격 매수에 주의하세요.
+        """)
+    elif gap < -0.5:
+        st.info(f"""
+        **💎 [기회?] 주가가 경제 지표보다 너무 낮습니다. (Gap: {gap:.2f})**
+        
+        경제 상황에 비해 주가가 과도하게 하락한 상태입니다. 
+        시장의 공포감이 과하게 반영되었거나, **저평가 매수 기회**일 수 있습니다.
+        """)
+    else:
+        st.success(f"""
+        **✅ [안정] 주가와 경제 지표가 비슷하게 움직입니다. (Gap: {gap:.2f})**
+        
+        큰 괴리 없이 흐름을 잘 따라가고 있습니다. 
+        특이한 징후보다는 시장의 추세를 따르는 중입니다.
+        """)
 
+    # 투자 포인트 (Expander)
+    if guide:
+        with st.expander(f"💡 '{selected_name}' 투자 포인트 읽어보기", expanded=False):
+            st.markdown(f"**[{guide['desc']}]**\n\n{guide['relation']} \n\n 👉 **Tip:** {guide['tip']}")
+
+    # 차트
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=df.index, y=df['Stock_Norm'], name='주가 (정규화)', line=dict(color='blue')))
     fig.add_trace(go.Scatter(x=df.index, y=df['Macro_Norm'], name=selected_name, line=dict(color='red', dash='dot')))

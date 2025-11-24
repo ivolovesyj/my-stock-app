@@ -81,7 +81,6 @@ def find_optimal_mix(stock_code, start_date, lag_days=0, progress_bar=None, stat
         if stock.empty: return None
     except: return None
 
-    # 시차 적용
     target_stock = stock.shift(-lag_days).dropna()
     common_index = target_stock.index
     y = (target_stock - target_stock.min()) / (target_stock.max() - target_stock.min())
@@ -227,22 +226,19 @@ def load_data_mix(stock_code, configs, start, lag=0):
             raws[name] = align
             shifted_align = align.shift(lag) 
             
-            # [수정] 앞뒤가 잘릴 수 있으므로 정규화 안전장치
-            if shifted_align.dropna().empty: continue
-            
-            nm = (shifted_align - shifted_align.min()) / (shifted_align.max() - shifted_align.min())
+            # 정규화 (shift된 데이터 기준)
+            target_align = shifted_align if lag != 0 else align
+            nm = (target_align - target_align.min()) / (target_align.max() - target_align.min())
 
             if conf['inverse']: nm = 1 - nm
             norms[name] = nm
-            
-            # fill_value=0 대신 NaN 유지하여 나중에 dropna로 처리
-            macro = macro.add(nm * conf['weight'], fill_value=0) 
+            macro = macro.add(nm * conf['weight'], fill_value=0)
             total_w += conf['weight']
         except: pass
-        
-    if total_weight > 0:
+    
+    # [수정된 부분] 여기서 에러가 났었습니다! 변수명을 total_w로 통일했습니다.
+    if total_w > 0:
         final_macro = macro / total_w
-        # [FIX] 시차(Lag)로 인한 결측치 제거 (0으로 떨어지는 문제 해결)
         if lag > 0: final_macro.iloc[:lag] = np.nan
         elif lag < 0: final_macro.iloc[lag:] = np.nan
     else:
@@ -272,7 +268,7 @@ else:
         with c1:
             if is_krx: val = f"{df['Stock'].iloc[-1]:,.0f}원"; sub = "KRW"
             else: 
-                rate = get_exchange_rate()
+                rate, _ = get_exchange_rate()
                 val = f"${df['Stock'].iloc[-1]:,.2f}"
                 sub = f"약 {df['Stock'].iloc[-1]*rate:,.0f}원"
             st.metric(f"주가 ({last_dt})", val, sub, delta_color="off")

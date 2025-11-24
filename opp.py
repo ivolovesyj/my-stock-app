@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 # 페이지 설정
 st.set_page_config(page_title="내 손안의 퀀트", layout="wide")
 
-# --- 1. 데이터 캐싱 (여기가 핵심!) ---
+# --- 1. 데이터 캐싱 ---
 @st.cache_data
 def get_stock_list():
     # A. 한국 주식 (KRX)
@@ -20,7 +20,7 @@ def get_stock_list():
     # B. 미국 S&P 500 (3중 안전장치)
     df_sp500 = pd.DataFrame()
     
-    # 시도 1: FinanceDataReader로 긁어오기
+    # 시도 1: fdr
     try:
         df_sp500 = fdr.StockListing('S&P500')
         df_sp500 = df_sp500[['Symbol', 'Name']]
@@ -28,7 +28,7 @@ def get_stock_list():
     except:
         pass
 
-    # 시도 2: (1번 실패시) GitHub에 있는 S&P500 전체 CSV 파일 읽어오기 (무조건 성공함)
+    # 시도 2: GitHub CSV
     if df_sp500.empty:
         try:
             url = "https://raw.githubusercontent.com/datasets/s-and-p-500-companies/master/data/constituents.csv"
@@ -38,7 +38,7 @@ def get_stock_list():
         except:
             pass
             
-    # 시도 3: (정말 만약에 다 실패하면) 주요 종목 비상용 리스트
+    # 시도 3: 비상용 리스트
     if df_sp500.empty:
          df_sp500 = pd.DataFrame([
              {'Code': 'AAPL', 'Name': 'Apple Inc.'},
@@ -47,8 +47,7 @@ def get_stock_list():
              {'Code': 'O', 'Name': 'Realty Income'}
          ])
 
-    # 한글 별명 붙여주기 (검색 편의용)
-    # 500개 다 영어로만 뜨면 불편하니까 주요 종목은 한글도 같이 뜨게 매핑
+    # 한글 매핑
     korean_map = {
         'AAPL': '애플', 'NVDA': '엔비디아', 'TSLA': '테슬라', 'MSFT': '마이크로소프트',
         'GOOGL': '구글', 'AMZN': '아마존', 'META': '메타', 'NFLX': '넷플릭스',
@@ -57,22 +56,18 @@ def get_stock_list():
         'O': '리얼티인컴', 'JPM': 'JP모건', 'MMM': '3M', 'BA': '보잉'
     }
     
-    # 맵핑 적용: "Name" 컬럼에 한글 추가
     for code, kor in korean_map.items():
-        # 해당 코드가 있는 행을 찾아서
         mask = df_sp500['Code'] == code
         if mask.any():
-            # 기존 영어 이름 뒤에 (한글) 추가
             eng_name = df_sp500.loc[mask, 'Name'].values[0]
             df_sp500.loc[mask, 'Name'] = f"{kor} ({eng_name})"
 
-    # C. 합치기
     df_total = pd.concat([df_krx, df_sp500])
     df_total['Label'] = df_total['Name'] + " (" + df_total['Code'] + ")"
     
     return df_total
 
-# --- 2. 지표별 가이드 ---
+# --- 2. 지표 가이드 ---
 indicator_guide = {
     "미국 10년물 국채금리": {"desc": "전 세계 자산의 기준이 되는 '돈의 몸값'", "relation": "📉 역의 관계 (금리↑ 주가↓)", "tip": "금리가 오르면 안전한 채권으로 돈이 쏠려 주식(특히 기술주)엔 악재입니다."},
     "원/달러 환율": {"desc": "달러 1개를 사기 위한 한국 돈의 액수", "relation": "📉 역의 관계 (환율↑ 코스피↓)", "tip": "환율 급등은 외국인 자금 이탈을 부릅니다. 단, 수출 기업에겐 호재일 수 있습니다."},
@@ -87,7 +82,7 @@ st.sidebar.title("🔍 분석 옵션")
 
 # A. 리스트 검색
 try:
-    with st.spinner('전 세계 종목 리스트 로딩 중... (최대 10초)'):
+    with st.spinner('리스트 로딩 중...'):
         df_stocks = get_stock_list()
     
     default_idx = 0
@@ -98,19 +93,22 @@ try:
         "1. 리스트에서 검색", 
         df_stocks['Label'].values,
         index=default_idx if default_idx < len(df_stocks) else 0,
-        help="🚀 이제 S&P 500 전 종목이 다 나옵니다. (디즈니, 보잉, 3M 등 포함)"
+        help="🚀 S&P 500 전 종목 + 한국 주식이 포함됩니다."
     )
     ticker_from_list = selected_label.split('(')[-1].replace(')', '')
 except:
+    # [여기가 수정된 부분입니다!] 
+    # 에러가 나면 무조건 삼성전자를 기본값으로 세팅해서 NameError 방지
     ticker_from_list = "005930"
+    selected_label = "삼성전자 (005930)"
 
 # B. 직접 입력
 st.sidebar.markdown("---") 
 custom_ticker = st.sidebar.text_input(
     "2. 직접 입력 (티커)", 
     "",
-    placeholder="예: JEPI, SCHD (ETF는 여기 입력)",
-    help="💡 S&P 500에 포함되지 않은 ETF나 중소형주는 여기에 티커를 적으세요."
+    placeholder="예: JEPI, SCHD",
+    help="💡 리스트에 없는 종목은 티커를 직접 입력하세요."
 )
 
 if custom_ticker:
@@ -118,6 +116,7 @@ if custom_ticker:
     display_name = ticker
 else:
     ticker = ticker_from_list
+    # 여기가 에러 났던 곳인데, 위에서 selected_label을 비상 정의해줬으므로 이제 안전함!
     display_name = selected_label.split('(')[0]
 
 # --- 설정 계속 ---

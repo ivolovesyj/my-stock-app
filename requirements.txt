@@ -1,3 +1,5 @@
 streamlit
 finance-datareader
 plotly
+lxml
+openpyxl

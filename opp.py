@@ -7,7 +7,7 @@ import plotly.express as px
 from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
 import time
-import statsmodels.api as sm # [필수] 통계 분석 라이브러리
+import statsmodels.api as sm
 
 # --- 1. 페이지 설정 ---
 st.set_page_config(page_title="My Quant Model (Pro)", layout="wide", page_icon="📈")
@@ -70,7 +70,7 @@ def get_exchange_rate():
         return df['Close'].iloc[-1], df.index[-1].strftime('%Y-%m-%d')
     except: return 1400.0, datetime.now().strftime('%Y-%m-%d')
 
-# --- [UPGRADE] 다중회귀분석(OLS) 기반 최적화 ---
+# --- 알고리즘 함수 ---
 def find_optimal_mix(stock_code, start_date, lag_days=0, progress_bar=None, status_text=None):
     if status_text: status_text.text("🔍 1/4단계: 데이터 수집 중...")
     if progress_bar: progress_bar.progress(10)
@@ -81,12 +81,11 @@ def find_optimal_mix(stock_code, start_date, lag_days=0, progress_bar=None, stat
         if stock.empty: return None
     except: return None
 
-    # 시차 적용 및 정규화
+    # 시차 적용
     target_stock = stock.shift(-lag_days).dropna()
     common_index = target_stock.index
-    y = (target_stock - target_stock.min()) / (target_stock.max() - target_stock.min()) # 정답지 (주가)
+    y = (target_stock - target_stock.min()) / (target_stock.max() - target_stock.min())
 
-    # 모든 지표 데이터 준비 (X)
     if status_text: status_text.text(f"📊 2/4단계: 경제지표 전처리 (시차 {lag_days}일)...")
     if progress_bar: progress_bar.progress(30)
     
@@ -98,10 +97,8 @@ def find_optimal_mix(stock_code, start_date, lag_days=0, progress_bar=None, stat
         try:
             indi = fdr.DataReader(code, start_date)
             if indi.empty: continue
-            # 보간 및 정렬
             aligned = indi.iloc[:, 0].reindex(stock.index).interpolate(method='linear').fillna(method='bfill').fillna(method='ffill')
-            aligned = aligned.loc[common_index] # 시차 적용된 인덱스와 맞춤
-            # 정규화 (회귀분석을 위해 필수)
+            aligned = aligned.loc[common_index]
             norm = (aligned - aligned.min()) / (aligned.max() - aligned.min())
             indicator_data[name] = norm
         except: continue
@@ -109,57 +106,39 @@ def find_optimal_mix(stock_code, start_date, lag_days=0, progress_bar=None, stat
     if not indicator_data: return None
     X = pd.DataFrame(indicator_data)
 
-    # 3. 다중회귀분석 (OLS) 수행
     if status_text: status_text.text("🧠 3/4단계: 다중회귀분석(OLS) 수행 중...")
     if progress_bar: progress_bar.progress(60)
     
-    # 상수항 추가 (절편)
     X_aug = sm.add_constant(X)
     
     try:
-        # 모델 적합
         model = sm.OLS(y, X_aug).fit()
-        
-        # 회귀계수(Coef) 추출 - 이게 곧 '영향력(Weight)' 입니다.
-        # P-value가 낮은(유의미한) 순서대로 보거나, 계수 절대값이 큰 순서대로 봅니다.
-        # 여기서는 '계수 절대값'이 큰 Top 3를 뽑습니다.
-        params = model.params.drop('const') # 절편 제외
+        params = model.params.drop('const')
         abs_params = params.abs().sort_values(ascending=False)
-        
         top_3_names = abs_params.head(3).index.tolist()
-        
-        # R-squared (설명력) 계산 -> 사용자에게 보여주면 좋음
         r_squared = model.rsquared
-        
     except: return "ERROR"
 
     if not top_3_names: return "NO_CORRELATION"
 
-    if status_text: status_text.text(f"✅ 4/4단계: 최적 모델 도출 (설명력 {r_squared*100:.1f}%)")
+    if status_text: status_text.text(f"✅ 4/4단계: 완료 (설명력 {r_squared*100:.1f}%)")
     if progress_bar: progress_bar.progress(100)
     time.sleep(0.5)
 
-    # 4. 결과 포맷팅
-    # Top 3 지표에 대해 비중 재계산 (총합 100% 되도록)
     final_config = []
-    total_coef = sum([params[name] if params[name] > 0 else abs(params[name]) for name in top_3_names]) # 절대값 합
-    
     for name in top_3_names:
         coef = params[name]
-        # 계수가 음수면 -> 역방향(Inverse) True
         is_inverse = True if coef < 0 else False
-        # 비중 계산
         weight = (abs(coef) / abs_params[top_3_names].sum()) * 100
-        
         final_config.append({
             "Name": name,
             "Weight": float(f"{weight:.1f}"),
             "Inverse": is_inverse
         })
         
-    return final_config, r_squared # 설명력도 같이 반환
+    return final_config, r_squared
 
-# --- 3. 사이드바 UI ---
+# --- 3. 사이드바 ---
 st.sidebar.header("🎛️ 퀀트 모델 설정")
 st.sidebar.subheader("Step 1. 종목 선택")
 with st.spinner('로딩 중...'): df_stocks = get_stock_list()
@@ -187,20 +166,16 @@ sel_period = st.sidebar.select_slider("분석 기간", list(period_opt.keys()), 
 days = period_opt[sel_period]
 start_date = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
 
-# AI 최적화 버튼
 if st.sidebar.button("⚡ AI 최적 조합 찾기 (Auto-Fit)", type="primary", use_container_width=True):
     stat = st.sidebar.empty()
     prog = st.sidebar.progress(0)
-    
-    # 함수 호출 (설명력 r2도 받아옴)
     result = find_optimal_mix(ticker, start_date, lag_days, prog, stat)
-    
     stat.empty(); prog.empty()
     
     if isinstance(result, tuple):
         res_data, r2_score = result
         st.session_state.opt_data = res_data
-        st.session_state.r2_score = r2_score # 설명력 저장
+        st.session_state.r2_score = r2_score
         st.sidebar.success(f"✅ 모델 생성 완료! (설명력: {r2_score*100:.1f}%)")
         st.rerun()
     elif result == "NO_CORRELATION": st.sidebar.warning("유의미한 지표 없음")
@@ -209,7 +184,6 @@ if st.sidebar.button("⚡ AI 최적 조합 찾기 (Auto-Fit)", type="primary", u
 if 'opt_data' in st.session_state: cur_data = st.session_state.opt_data
 else: cur_data = [{"Name": "미국 10년물 금리", "Weight": 50.0, "Inverse": True}, {"Name": "원/달러 환율", "Weight": 50.0, "Inverse": True}]
 
-# 설명력 표시 (있는 경우)
 if 'r2_score' in st.session_state:
     r2 = st.session_state.r2_score * 100
     if r2 > 70: color = "green"
@@ -229,7 +203,12 @@ rem = 100 - tot_sum
 if abs(rem) < 0.1: st.sidebar.success("✅ 비중 합계 100%")
 else: st.sidebar.warning(f"⚠️ 합계 {tot_sum:.1f}%")
 
-configs = {r["Name"]: {'code': INDICATORS_MAP[r["Name"]], 'weight': r["Weight"], 'inverse': r["Inverse"]} for _, r in ed_df.iterrows() if r["Name"]}
+# [수정된 핵심 라인] 안전장치 추가 (in INDICATORS_MAP)
+configs = {
+    r["Name"]: {'code': INDICATORS_MAP[r["Name"]], 'weight': r["Weight"], 'inverse': r["Inverse"]} 
+    for _, r in ed_df.iterrows() 
+    if r["Name"] and r["Name"] in INDICATORS_MAP
+}
 
 # --- 4. 메인 로직 ---
 @st.cache_data
@@ -248,10 +227,9 @@ def load_data_mix(stock_code, configs, start, lag=0):
             align = d.iloc[:,0].reindex(stock.index).interpolate().fillna(method='bfill').fillna(method='ffill')
             raws[name] = align
             shifted_align = align.shift(lag) 
-            nm = (shifted_align - shifted_align.min()) / (shifted_aligned.max() - shifted_aligned.min()) if 'shifted_aligned' in locals() else (align - align.min()) / (align.max() - align.min())
-            
-            # 위 변수명 버그 수정: shift 적용된 것으로 정규화
-            nm = (shifted_align - shifted_align.min()) / (shifted_align.max() - shifted_align.min())
+            # 정규화 로직 안전하게 수정
+            target_align = shifted_align if lag != 0 else align
+            nm = (target_align - target_align.min()) / (target_align.max() - target_align.min())
 
             if conf['inverse']: nm = 1 - nm
             norms[name] = nm
@@ -298,7 +276,6 @@ else:
             elif gap < -0.3: st.metric("상태", "🔵 저평가", f"Gap {gap:.2f}", delta_color="normal")
             else: st.metric("상태", "🟢 적정", f"Gap {gap:.2f}", delta_color="off")
 
-        # 차트
         st.subheader("📈 추세 비교")
         if lag_days > 0:
             st.info(f"ℹ️ 현재 **{lag_days}일 선행 분석** 중입니다. 빨간 선(경제지표)이 파란 선(주가)보다 먼저 움직이는지 확인하세요.")
@@ -310,7 +287,6 @@ else:
         fig.update_layout(hovermode="x unified", height=400, margin=dict(t=10, b=0))
         st.plotly_chart(fig, use_container_width=True)
 
-        # 예측력 검증
         st.markdown("---")
         st.subheader("🔮 예측력 검증 (Backtest)")
         
@@ -346,7 +322,6 @@ else:
                 fig_scat.update_layout(height=350)
                 st.plotly_chart(fig_scat, use_container_width=True)
 
-        # 개별 지표 탭
         with st.expander("📊 개별 지표 상세 보기"):
             cols = st.columns(2)
             for i, name in enumerate(configs.keys()):
@@ -355,7 +330,7 @@ else:
                         fig_sub = make_subplots(specs=[[{"secondary_y": True}]])
                         fig_sub.add_trace(go.Scatter(x=df.index, y=df['Stock_N'], name="주가", line=dict(color='#ccc')), secondary_y=False)
                         fname = f"{name} (역)" if configs[name]['inverse'] else name
-                        fig_sub.add_trace(go.Scatter(x=norms[name].index, y=norms[name], name=fname, line=dict(color='#FF4081', width=2)), secondary_y=True)
+                        fig_sub.add_trace(go.Scatter(x=norms[name].index, y=norms[name], name=fname, line=dict(color='blue')), secondary_y=True)
                         fig_sub.update_layout(title=name, height=250, showlegend=False, margin=dict(t=30,b=0))
                         fig_sub.update_yaxes(showticklabels=False)
                         st.plotly_chart(fig_sub, use_container_width=True)

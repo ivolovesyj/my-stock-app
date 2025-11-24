@@ -119,7 +119,25 @@ indicators = {
 selected_name = st.sidebar.selectbox("비교할 경제지표", list(indicators.keys()))
 selected_code = indicators[selected_name]
 
-days = st.sidebar.slider("분석 기간(일)", 365, 1825, 730)
+# --- [수정 2] 분석 기간을 년 단위 버튼으로 변경 ---
+st.sidebar.markdown("---") 
+st.sidebar.subheader("📅 분석 기간 설정")
+period_options = {
+    "6개월": 180,
+    "1년": 365,
+    "2년": 730,
+    "3년": 1095,
+    "5년": 1825
+}
+# 가로형 버튼(pills 느낌)으로 선택
+selected_period = st.sidebar.radio(
+    "기간을 선택하세요", 
+    list(period_options.keys()), 
+    index=2, # 기본값 2년
+    horizontal=True,
+    label_visibility="collapsed"
+)
+days = period_options[selected_period]
 start_date = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
 
 # --- 4. 데이터 로딩 ---
@@ -147,26 +165,41 @@ if df is not None and not df.empty:
     
     last_date = df.index[-1].strftime('%Y-%m-%d')
     current_price = df['Stock'].iloc[-1]
-
     is_krx = ticker.isdigit()
     exchange_rate_info = ""
 
+    # --- [수정 1] 주가 표시를 HTML로 커스텀 (잘림 방지) ---
     if is_krx:
-        price_display = f"{current_price:,.0f}원"
+        # 한국 주식
+        price_html = f"""
+        <div style="font-size: 14px; color: gray; margin-bottom: -5px;">주가 (종가 기준, {last_date})</div>
+        <div style="font-size: 32px; font-weight: bold;">{current_price:,.0f}원</div>
+        """
     else:
+        # 미국 주식 (줄바꿈 및 작은 글씨 적용)
         ex_rate, ex_date = get_exchange_rate()
         krw_price = current_price * ex_rate
-        price_display = f"${current_price:,.2f} (약 {krw_price:,.0f}원)"
-        exchange_rate_info = f"💱 적용 환율: {ex_rate:,.2f}원/달러 ({ex_date} 기준)"
+        exchange_rate_info = f"💱 환율: {ex_rate:,.2f}원 ({ex_date})"
+        price_html = f"""
+        <div style="font-size: 14px; color: gray; margin-bottom: -5px;">주가 (종가 기준, {last_date})</div>
+        <div style="font-size: 32px; font-weight: bold;">${current_price:,.2f}</div>
+        <div style="font-size: 16px; color: #555; margin-top: -5px;">(약 {krw_price:,.0f}원)</div>
+        """
 
+    # 지표 값
     guide = indicator_guide.get(selected_name)
     unit = guide['unit'] if guide else ""
     macro_value_display = f"{df['Macro'].iloc[-1]:,.2f} {unit}"
 
     col1, col2, col3 = st.columns(3)
-    col1.metric(f"주가 (종가 기준, {last_date})", price_display)
+    
+    # col1: 주가 (커스텀 HTML 사용)
+    col1.markdown(price_html, unsafe_allow_html=True)
+    
+    # col2: 지표 (기존 방식)
     col2.metric(f"지표 (종가 기준, {last_date})", macro_value_display)
     
+    # col3: 괴리율 상태 + [수정 3] 툴팁(?)에 설명 넣기
     if gap > 0.5:
         state = "🔴 과열 (조심!)"
         msg = "주가가 지표보다 너무 높습니다. 단기 급등 주의!"
@@ -176,12 +209,24 @@ if df is not None and not df.empty:
     else:
         state = "🟢 적정 (동행)"
         msg = "지표와 비슷하게 움직이고 있습니다."
-        
-    col3.metric("괴리율 상태", state, f"{gap:.2f}")
+    
+    # 여기가 핵심! help 파라미터에 긴 설명을 넣었습니다.
+    tooltip_text = """
+    🤔 정규화 (Normalization)란?
+    서로 단위가 다른 주가와 지표를 0~1 사이 점수로 변환해 '추세'만 비교하는 것입니다.
 
+    🐕 괴리율 (Gap)이란?
+    '경제(주인)와 주가(강아지)' 이론입니다.
+    - 양수(+)가 크면: 강아지가 너무 앞서감 (과열)
+    - 음수(-)가 크면: 강아지가 뒤처짐 (저평가)
+    """
+    col3.metric("괴리율 상태", state, f"{gap:.2f}", help=tooltip_text)
+
+    # 환율 정보 표시
     if exchange_rate_info:
         st.caption(exchange_rate_info)
 
+    # 투자 포인트 (기존 하단 설명)
     if guide:
         with st.expander(f"💡 '{selected_name}' 투자 포인트 확인하기", expanded=True):
             st.markdown(f"**[{guide['desc']}]**\n\n{guide['relation']} \n\n 👉 **Tip:** {guide['tip']}")
@@ -191,28 +236,6 @@ if df is not None and not df.empty:
     fig.add_trace(go.Scatter(x=df.index, y=df['Stock_Norm'], name='주가 (정규화)', line=dict(color='blue')))
     fig.add_trace(go.Scatter(x=df.index, y=df['Macro_Norm'], name=selected_name, line=dict(color='red', dash='dot')))
     st.plotly_chart(fig, use_container_width=True)
-
-    # --- [NEW] 용어 설명 섹션 (Expander) ---
-    with st.expander("❓ '정규화'와 '괴리율'이 무엇인가요? (용어 설명 보기)"):
-        st.markdown("""
-        ### 1. 정규화 (Normalization)란? 🤔
-        주가(예: 100,000원)와 경제지표(예: 4.5%)는 단위가 달라서 직접 비교할 수가 없습니다.
-        마치 **'키 180cm인 사람'과 '몸무게 80kg인 사람' 중 누가 더 큰가요?** 라고 묻는 것과 같죠.
-        
-        그래서 두 데이터를 똑같이 **0점(최저) ~ 1점(최고)** 사이의 점수로 변환해서, **'추세(Trend)'만 비교하는 기술**입니다.
-        * **1.0에 가깝다면?** : 최근 기간 중 가장 높은 수준입니다.
-        * **0.0에 가깝다면?** : 최근 기간 중 가장 낮은 수준입니다.
-        
-        ---
-        
-        ### 2. 괴리율 (Gap)이란? 🐕
-        유명한 투자자 앙드레 코스톨라니는 **'경제는 주인이고, 주가는 강아지다'**라고 했습니다.
-        강아지(주가)는 주인(경제)을 앞서거니 뒤서거니 하지만, 결국 산책 줄에 묶여 있어 주인 곁으로 돌아옵니다.
-        
-        * **괴리율이 크다 (+):** 강아지가 주인보다 너무 멀리 앞서갔습니다. (주가 과열)
-        * **괴리율이 작다 (-):** 강아지가 주인보다 너무 뒤쳐졌습니다. (주가 저평가)
-        * **0에 가깝다:** 강아지가 주인 옆에 잘 붙어서 가고 있습니다. (적정 주가)
-        """)
 
 else:
     st.error(f"'{ticker}' 데이터를 찾을 수 없습니다.")

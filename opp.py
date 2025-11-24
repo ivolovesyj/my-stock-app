@@ -7,11 +7,9 @@ from datetime import datetime, timedelta
 # 페이지 설정
 st.set_page_config(page_title="내 손안의 퀀트", layout="wide")
 
-# --- 1. 데이터 캐싱 (절대 실패하지 않는 구조로 변경) ---
+# --- 1. 데이터 캐싱 ---
 @st.cache_data
 def get_stock_list():
-    # [1단계] 무조건 있어야 하는 'VIP 기본 리스트' (서버 터져도 이건 뜸)
-    # 여기에 자주 쓰는거 다 넣어둡니다.
     base_data = [
         {'Code': '005930', 'Name': '삼성전자'},
         {'Code': '000660', 'Name': 'SK하이닉스'},
@@ -37,22 +35,18 @@ def get_stock_list():
     ]
     df_base = pd.DataFrame(base_data)
 
-    # [2단계] 외부 데이터 추가 시도 (실패하면 base만 씀)
     df_krx = pd.DataFrame()
     df_sp500 = pd.DataFrame()
 
     try:
         df_krx = fdr.StockListing('KRX')[['Code', 'Name']]
     except:
-        pass # 한국 주식 로딩 실패해도 괜찮음
+        pass
 
     try:
-        # S&P500 CSV 읽기 시도
         url = "https://raw.githubusercontent.com/datasets/s-and-p-500-companies/master/data/constituents.csv"
         df_sp500 = pd.read_csv(url)[['Symbol', 'Name']]
         df_sp500.columns = ['Code', 'Name']
-        
-        # 한글 이름 매핑 (주요 종목만)
         korean_map = {'AAPL':'애플', 'NVDA':'엔비디아', 'TSLA':'테슬라', 'MSFT':'마이크로소프트', 'GOOGL':'구글', 'AMZN':'아마존', 'META':'메타', 'NFLX':'넷플릭스'}
         for code, kor in korean_map.items():
              mask = df_sp500['Code'] == code
@@ -60,34 +54,67 @@ def get_stock_list():
                  eng = df_sp500.loc[mask, 'Name'].values[0]
                  df_sp500.loc[mask, 'Name'] = f"{kor} ({eng})"
     except:
-        pass # 미국 주식 로딩 실패해도 괜찮음
+        pass
 
-    # [3단계] 다 합치기 (기본 + 한국 + 미국)
-    # concat은 빈 데이터프레임이 있어도 에러 안 남
     df_total = pd.concat([df_base, df_krx, df_sp500]).drop_duplicates(subset=['Code'])
-    
-    # 라벨 만들기
     df_total['Label'] = df_total['Name'] + " (" + df_total['Code'] + ")"
     return df_total
 
-# --- 2. 지표별 가이드 ---
+@st.cache_data
+def get_exchange_rate():
+    try:
+        df = fdr.DataReader('USD/KRW', (datetime.now() - timedelta(days=7)))
+        return df['Close'].iloc[-1], df.index[-1].strftime('%Y-%m-%d')
+    except:
+        return 1400.0, datetime.now().strftime('%Y-%m-%d')
+
+# --- 2. 지표 가이드 & 단위(Unit) 추가 ---
+# [수정] 각 지표별로 'unit' 정보를 추가했습니다.
 indicator_guide = {
-    "미국 10년물 국채금리": {"desc": "전 세계 자산의 기준이 되는 '돈의 몸값'", "relation": "📉 역의 관계 (금리↑ 주가↓)", "tip": "금리가 오르면 안전한 채권으로 돈이 쏠려 주식(특히 기술주)엔 악재입니다."},
-    "원/달러 환율": {"desc": "달러 1개를 사기 위한 한국 돈의 액수", "relation": "📉 역의 관계 (환율↑ 코스피↓)", "tip": "환율 급등은 외국인 자금 이탈을 부릅니다. 단, 수출 기업에겐 호재일 수 있습니다."},
-    "국제유가(WTI)": {"desc": "에너지 비용을 대표하는 원유 가격", "relation": "⚠️ 케이스 바이 케이스", "tip": "수요 증가로 오르면 호재, 공급 부족(전쟁)으로 급등하면 비용 증가 악재입니다."},
-    "나스닥 지수": {"desc": "미국 기술주 중심의 시장 지수", "relation": "🤝 양의 관계 (동행)", "tip": "한국 주식 시장은 미국 나스닥의 흐름을 강하게 추종합니다."},
-    "S&P 500 지수": {"desc": "미국 우량주 500개 지수", "relation": "🤝 양의 관계 (동행)", "tip": "글로벌 증시의 표준입니다. 이 지수가 꺾이면 전 세계가 위험합니다."},
-    "미국 기준금리": {"desc": "미국 연준(Fed)의 정책 금리", "relation": "📉 역의 관계", "tip": "돈줄을 죄는 신호입니다. 금리 인상은 주식 시장에 하락 압력을 줍니다."}
+    "미국 10년물 국채금리": {
+        "desc": "전 세계 자산의 기준이 되는 '돈의 몸값'", 
+        "relation": "📉 역의 관계 (금리↑ 주가↓)", 
+        "tip": "금리가 오르면 안전한 채권으로 돈이 쏠려 주식(특히 기술주)엔 악재입니다.",
+        "unit": "%" 
+    },
+    "원/달러 환율": {
+        "desc": "달러 1개를 사기 위한 한국 돈의 액수", 
+        "relation": "📉 역의 관계 (환율↑ 코스피↓)", 
+        "tip": "환율 급등은 외국인 자금 이탈을 부릅니다. 단, 수출 기업에겐 호재일 수 있습니다.",
+        "unit": "원"
+    },
+    "국제유가(WTI)": {
+        "desc": "에너지 비용을 대표하는 원유 가격", 
+        "relation": "⚠️ 케이스 바이 케이스", 
+        "tip": "수요 증가로 오르면 호재, 공급 부족(전쟁)으로 급등하면 비용 증가 악재입니다.",
+        "unit": "달러($)"
+    },
+    "나스닥 지수": {
+        "desc": "미국 기술주 중심의 시장 지수", 
+        "relation": "🤝 양의 관계 (동행)", 
+        "tip": "한국 주식 시장은 미국 나스닥의 흐름을 강하게 추종합니다.",
+        "unit": "pt"
+    },
+    "S&P 500 지수": {
+        "desc": "미국 우량주 500개 지수", 
+        "relation": "🤝 양의 관계 (동행)", 
+        "tip": "글로벌 증시의 표준입니다. 이 지수가 꺾이면 전 세계가 위험합니다.",
+        "unit": "pt"
+    },
+    "미국 기준금리": {
+        "desc": "미국 연준(Fed)의 정책 금리", 
+        "relation": "📉 역의 관계", 
+        "tip": "돈줄을 죄는 신호입니다. 금리 인상은 주식 시장에 하락 압력을 줍니다.",
+        "unit": "%"
+    }
 }
 
-# --- 3. 사이드바 (여기가 중요!) ---
+# --- 3. 사이드바 ---
 st.sidebar.title("🔍 분석 옵션")
 
-# 리스트 로딩 (실패란 없다)
 with st.spinner('종목 리스트 준비 중...'):
     df_stocks = get_stock_list()
 
-# [1] 리스트 검색창 (무조건 뜹니다)
 default_idx = 0
 if '005930' in df_stocks['Code'].values:
     default_idx = df_stocks.index[df_stocks['Code'] == '005930'].tolist()[0]
@@ -100,7 +127,6 @@ selected_label = st.sidebar.selectbox(
 )
 ticker_from_list = selected_label.split('(')[-1].replace(')', '')
 
-# [2] 직접 입력창
 st.sidebar.markdown("---") 
 custom_ticker = st.sidebar.text_input(
     "2. 직접 입력 (티커)", 
@@ -109,7 +135,6 @@ custom_ticker = st.sidebar.text_input(
     help="리스트에 없는 종목은 여기에 티커를 입력하세요."
 )
 
-# 최종 티커 결정
 if custom_ticker:
     ticker = custom_ticker.upper()
     display_name = ticker
@@ -117,7 +142,6 @@ else:
     ticker = ticker_from_list
     display_name = selected_label.split('(')[0]
 
-# --- 설정 계속 ---
 indicators = {
     "미국 10년물 국채금리": "FRED:DGS10", "원/달러 환율": "FRED:DEXKOUS",
     "국제유가(WTI)": "FRED:DCOILWTICO", "나스닥 지수": "FRED:NASDAQCOM",
@@ -152,9 +176,30 @@ if df is not None and not df.empty:
     df['Macro_Norm'] = (df['Macro'] - df['Macro'].min()) / (df['Macro'].max() - df['Macro'].min())
     gap = df['Stock_Norm'].iloc[-1] - df['Macro_Norm'].iloc[-1]
     
+    last_date = df.index[-1].strftime('%Y-%m-%d')
+    current_price = df['Stock'].iloc[-1]
+
+    is_krx = ticker.isdigit()
+    exchange_rate_info = ""
+
+    if is_krx:
+        price_display = f"{current_price:,.0f}원"
+    else:
+        ex_rate, ex_date = get_exchange_rate()
+        krw_price = current_price * ex_rate
+        price_display = f"${current_price:,.2f} (약 {krw_price:,.0f}원)"
+        exchange_rate_info = f"💱 적용 환율: {ex_rate:,.2f}원/달러 ({ex_date} 기준)"
+
+    # --- [수정] 지표 값에 단위 붙이기 ---
+    guide = indicator_guide.get(selected_name)
+    unit = guide['unit'] if guide else "" # 단위 가져오기
+    
+    # 지표 값 포맷팅 (소수점 2자리 + 단위)
+    macro_value_display = f"{df['Macro'].iloc[-1]:,.2f} {unit}"
+
     col1, col2, col3 = st.columns(3)
-    col1.metric("현재 주가", f"{df['Stock'].iloc[-1]:,.0f}")
-    col2.metric(f"지표 ({selected_name})", f"{df['Macro'].iloc[-1]:.2f}")
+    col1.metric(f"주가 (종가 기준, {last_date})", price_display)
+    col2.metric(f"지표 (종가 기준, {last_date})", macro_value_display)
     
     if gap > 0.5:
         state = "🔴 과열 (조심!)"
@@ -168,14 +213,16 @@ if df is not None and not df.empty:
         
     col3.metric("괴리율 상태", state, f"{gap:.2f}")
 
-    guide = indicator_guide.get(selected_name)
+    if exchange_rate_info:
+        st.caption(exchange_rate_info)
+
     if guide:
         with st.expander(f"💡 '{selected_name}' 투자 포인트 확인하기", expanded=True):
             st.markdown(f"**[{guide['desc']}]**\n\n{guide['relation']} \n\n 👉 **Tip:** {guide['tip']}")
         st.info(f"📢 AI 코멘트: {msg}")
 
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=df.index, y=df['Stock_Norm'], name='주가 (정규화)', line=dict(color='blue')))
+    fig.add_trace(go.Scatter(x=df.index, y=df['Stock_Norm'], name='주가 (종가)', line=dict(color='blue')))
     fig.add_trace(go.Scatter(x=df.index, y=df['Macro_Norm'], name=selected_name, line=dict(color='red', dash='dot')))
     st.plotly_chart(fig, use_container_width=True)
 

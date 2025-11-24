@@ -81,7 +81,6 @@ def find_optimal_mix(stock_code, start_date, lag_days=0, progress_bar=None, stat
         if stock.empty: return None
     except: return None
 
-    # 시차 적용
     target_stock = stock.shift(-lag_days).dropna()
     common_index = target_stock.index
     y = (target_stock - target_stock.min()) / (target_stock.max() - target_stock.min())
@@ -203,7 +202,7 @@ rem = 100 - tot_sum
 if abs(rem) < 0.1: st.sidebar.success("✅ 비중 합계 100%")
 else: st.sidebar.warning(f"⚠️ 합계 {tot_sum:.1f}%")
 
-# [수정된 핵심 라인] 안전장치 추가 (in INDICATORS_MAP)
+# 안전한 딕셔너리 생성 (KeyError 방지)
 configs = {
     r["Name"]: {'code': INDICATORS_MAP[r["Name"]], 'weight': r["Weight"], 'inverse': r["Inverse"]} 
     for _, r in ed_df.iterrows() 
@@ -227,7 +226,8 @@ def load_data_mix(stock_code, configs, start, lag=0):
             align = d.iloc[:,0].reindex(stock.index).interpolate().fillna(method='bfill').fillna(method='ffill')
             raws[name] = align
             shifted_align = align.shift(lag) 
-            # 정규화 로직 안전하게 수정
+            
+            # 정규화 (shift된 데이터 기준)
             target_align = shifted_align if lag != 0 else align
             nm = (target_align - target_align.min()) / (target_align.max() - target_align.min())
 
@@ -262,7 +262,8 @@ else:
         with c1:
             if is_krx: val = f"{df['Stock'].iloc[-1]:,.0f}원"; sub = "KRW"
             else: 
-                rate = get_exchange_rate()
+                # [수정됨] 여기서 에러가 났었습니다. 튜플 언패킹으로 수정!
+                rate, _ = get_exchange_rate() 
                 val = f"${df['Stock'].iloc[-1]:,.2f}"
                 sub = f"약 {df['Stock'].iloc[-1]*rate:,.0f}원"
             st.metric(f"주가 ({last_dt})", val, sub, delta_color="off")

@@ -4,7 +4,7 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 import plotly.express as px
-from plotly.subplots import make_subplots  # [복구됨] 이 친구가 빠져서 에러가 났었습니다!
+from plotly.subplots import make_subplots
 from datetime import datetime, timedelta
 import time
 
@@ -253,7 +253,7 @@ else:
         fig.update_layout(hovermode="x unified", height=400, margin=dict(t=10, b=0))
         st.plotly_chart(fig, use_container_width=True)
 
-        # --- 예측력 검증 (Backtest) ---
+        # --- 예측력 검증 (Backtest) 업그레이드 ---
         st.markdown("---")
         st.subheader("🔮 이 모델의 예측력 검증 (Backtest)")
         
@@ -265,21 +265,37 @@ else:
         if not analysis_df.empty:
             corr_predict = analysis_df['Gap'].corr(analysis_df['Next_Return'])
             
+            # [핵심] 점수 변환 로직 (0~100점)
+            # 상관계수가 -1에 가까울수록(음수) 좋은 모델 -> 100점
+            # 상관계수가 0 이상(양수)이면 -> 0점 (예측 실패)
+            if corr_predict < 0:
+                score = int(abs(corr_predict) * 100)
+            else:
+                score = 0 # 양의 상관관계는 우리 모델(평균회귀)과 맞지 않음
+
             c_res1, c_res2 = st.columns([1, 2])
             
             with c_res1:
-                st.markdown("#### 📊 분석 결과")
-                st.metric("예측 상관계수", f"{corr_predict:.2f}", help="-1에 가까울수록 좋습니다.")
+                st.markdown("#### 🤖 AI 신뢰도 점수")
                 
-                if corr_predict < -0.3:
-                    st.success("✅ **유효한 모델입니다!**\n\n과거 데이터를 볼 때, 괴리율이 클 때 주가가 하락하는 경향이 있습니다.")
-                elif corr_predict > 0.3:
-                    st.error("❌ **위험한 모델입니다!**\n\n오히려 고평가일 때 주가가 더 오르는 경향이 있습니다.")
+                # 점수별 멘트 및 색상
+                if score >= 60:
+                    score_color = "green"
+                    msg = "✅ **매우 높음**\n\n믿고 쓰셔도 됩니다. 과거에도 척척 맞췄네요!"
+                elif score >= 30:
+                    score_color = "orange"
+                    msg = "⚠️ **보통**\n\n참고용으로만 보세요. 반반 확률입니다."
                 else:
-                    st.warning("⚠️ **예측력이 약합니다.**\n\n뚜렷한 패턴이 없습니다.")
+                    score_color = "red"
+                    msg = "❌ **낮음**\n\n이 지표 조합은 잘 안 맞아요. 다시 설정해보세요."
+
+                # 점수 표시 (Progress Bar + Text)
+                st.metric("점수 (100점 만점)", f"{score}점")
+                st.progress(score)
+                st.markdown(f"상관계수: {corr_predict:.2f}")
+                st.info(msg)
 
             with c_res2:
-                # [수정] 여기서 에러 났던 부분! statsmodels가 없어도 점은 찍히게 처리
                 try:
                     fig_scat = px.scatter(
                         analysis_df, x='Gap', y='Next_Return', 
@@ -289,12 +305,7 @@ else:
                         opacity=0.3
                     )
                 except:
-                    # statsmodels 없으면 추세선 없이 그림
-                    fig_scat = px.scatter(
-                        analysis_df, x='Gap', y='Next_Return', 
-                        title="괴리율(X) vs 1개월 뒤 수익률(Y) (추세선 없음)",
-                        opacity=0.3
-                    )
+                    fig_scat = px.scatter(analysis_df, x='Gap', y='Next_Return', title="괴리율 vs 수익률", opacity=0.3)
                 
                 fig_scat.update_layout(height=350)
                 st.plotly_chart(fig_scat, use_container_width=True)
@@ -305,7 +316,6 @@ else:
             for i, name in enumerate(configs.keys()):
                 if name in norms:
                     with cols[i%2]:
-                        # [수정] make_subplots 임포트했으니 이제 잘 됩니다!
                         fig_sub = make_subplots(specs=[[{"secondary_y": True}]])
                         fig_sub.add_trace(go.Scatter(x=df.index, y=df['Stock_N'], name="주가", line=dict(color='#ccc')), secondary_y=False)
                         fname = f"{name} (역)" if configs[name]['inverse'] else name
